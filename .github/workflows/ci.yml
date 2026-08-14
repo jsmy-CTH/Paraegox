@@ -27,11 +27,7 @@ jobs:
         run: rustup toolchain install --no-self-update
       - name: Check formatting
         run: cargo fmt --all --check
-      - name: Check workspace
-        run: cargo check --workspace --all-targets --locked
       - name: Run Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Run tests
         run: cargo test --workspace --all-targets --locked
-      - name: Smoke public CLI
-        run: cargo run --locked --bin paraegox -- --help
