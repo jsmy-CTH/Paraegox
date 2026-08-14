@@ -1,0 +1,37 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust-baseline:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Install repository-pinned Rust toolchain
+        run: rustup toolchain install --no-self-update
+      - name: Check formatting
+        run: cargo fmt --all --check
+      - name: Check workspace
+        run: cargo check --workspace --all-targets --locked
+      - name: Run Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Run tests
+        run: cargo test --workspace --all-targets --locked
+      - name: Smoke public CLI
+        run: cargo run --locked --bin paraegox -- --help
