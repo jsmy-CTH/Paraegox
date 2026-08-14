@@ -10,6 +10,17 @@ Paraegox is a distributed embodied-intelligence Agent OS. Keep that product dire
 - Do not run project build or test commands on the Mac checkout unless the user explicitly changes this policy.
 - Never place credentials, model keys, device secrets, tunnel keys, or passwords in the repository, argv, logs, fixtures, or documentation.
 
+## Scope authority and stop rule
+
+- The user's current request is the complete authorized scope. Do not infer permission for the next milestone, adjacent features, speculative hardening, cleanup, refactoring, or future-proofing.
+- When the requested outcome is implemented and validated, stop. Report possible next work without starting it unless the user explicitly asks for it.
+- Questions, brainstorming, historical documents, architecture diagrams, and old repository code are context, not implementation authorization.
+- Do not add a new crate unless the user explicitly approves that crate in the current scope. A crate also needs a present compile, deployment, language, lifecycle, or security boundary; file size or an architecture-layer name is not sufficient.
+- Before adding a production file, confirm that no current owner can hold the change coherently and that the file is required by the current executable path. Prefer extending an existing file over creating a speculative layer.
+- Do not create placeholder directories, empty modules, future protocol versions, unused traits, duplicate models, speculative fixtures, or compatibility shims.
+- Keep plans, status, research, checklists, and progress reports in chat by default. Persist them only when the user explicitly requests a repository artifact.
+- Every closeout must state any added production files and crates and why each was necessary. If none were added, say so.
+
 ## Development discipline
 
 - Preserve one executable product path at every milestone. Infrastructure without a same-slice producer, consumer, and observable scenario does not merge.
