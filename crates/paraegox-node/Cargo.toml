@@ -1,5 +1,5 @@
 [package]
-name = "paraegox"
+name = "paraegox-node"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,11 +7,11 @@ repository.workspace = true
 publish = false
 
 [dependencies]
+paraegox-fabric = { path = "../paraegox-fabric" }
 paraegox-kernel = { path = "../paraegox-kernel" }
-paraegox-node = { path = "../paraegox-node" }
 paraegox-runtime = { path = "../paraegox-runtime" }
+serde.workspace = true
 serde_json.workspace = true
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal"] }
 
 [lints]
 workspace = true
