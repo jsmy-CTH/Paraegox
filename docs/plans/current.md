@@ -7,6 +7,8 @@
 
 用户已明确要求“开始 plan，然后开发”。本计划授权的只是一个可寻址 Node、其 RuntimeHost、FabricService 和外部 probe 构成的第一条可执行切片。
 
+用户随后已授权继续完成首个分布式具身 Agent 闭环，但后续仍按 `双 Node → Deck/Card + Agent/TUI → 真实模型 → 模拟设备 → 分布式 Deck → 真实设备` 的依赖顺序逐步交付。本文继续只拥有当前 M1；后续 crate、协议和服务不得在各自真实 producer、consumer 与验收场景进入范围前提前创建。长期顺序与边界由 `architecture/system-model.md` 记录。
+
 ## Outcome
 
 在一个进程中启动具有 identity 和 incarnation 的 Paraegox Node，由其 RuntimeHost 启动并承载 FabricService；第二个外部进程经真实 Fabric 在有限时间内 probe 该 Node，读取 Node、RuntimeHost 和 FabricService 的 identity 与 readiness。
