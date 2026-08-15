@@ -4,12 +4,18 @@ use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 use std::time::Duration;
 
-use paraegox_fabric::{FabricError, FabricHandle, FabricService, query_one};
+use paraegox_agent::{AgentCard, AgentService, agent_query_binding, builtin_agent_definition};
+use paraegox_deck::{Card, CardKey, DeckCompiler, DeckKey, DeckSpec};
+use paraegox_fabric::{FabricError, FabricHandle, FabricQueryBinding, FabricService, query_one};
 use paraegox_kernel::{NodeId, NodeIncarnation};
 use paraegox_runtime::{
-    RuntimeHost, RuntimeHostError, RuntimeHostIdentity, RuntimeHostSnapshot, RuntimeHostState,
+    CoreService, DeckLaunch, RuntimeHost, RuntimeHostError, RuntimeHostIdentity,
+    RuntimeHostSnapshot, RuntimeHostState,
 };
 use serde::{Deserialize, Serialize};
+
+const BUILTIN_AGENT_DECK_KEY: &str = "builtin-agent";
+const BUILTIN_AGENT_CARD_KEY: &str = "agent";
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct NodeIdentity {
@@ -56,7 +62,7 @@ impl NodeRuntimeStatus {
 
 pub struct Node {
     identity: NodeIdentity,
-    runtime: RuntimeHost<FabricService>,
+    runtime: RuntimeHost,
     fabric_handle: FabricHandle,
 }
 
@@ -66,20 +72,69 @@ impl Node {
         runtime_identity: RuntimeHostIdentity,
         listen_endpoint: impl Into<String>,
         connect_endpoint: Option<String>,
-    ) -> Result<Self, FabricError> {
-        let binding_node = identity.clone();
-        let fabric = FabricService::new_with_connect_endpoint(
+    ) -> Result<Self, NodeBuildError> {
+        let fabric = FabricService::new_with_bindings(
             listen_endpoint,
             connect_endpoint,
-            runtime_status_key(&identity.node_id),
-            move |runtime| {
-                encode_runtime_status(&binding_node, runtime).map_err(|error| error.to_string())
-            },
-        )?;
+            vec![runtime_status_binding(identity.clone())?],
+        )
+        .map_err(|error| NodeBuildError::context("could not construct FabricService", error))?;
         let fabric_handle = fabric.handle();
+        let core_services: Vec<Box<dyn CoreService>> = vec![Box::new(fabric)];
+        let runtime = RuntimeHost::new(runtime_identity, core_services)
+            .map_err(|error| NodeBuildError::context("could not construct RuntimeHost", error))?;
         Ok(Self {
             identity,
-            runtime: RuntimeHost::new(runtime_identity, fabric),
+            runtime,
+            fabric_handle,
+        })
+    }
+
+    /// Constructs the smallest executable Deck: one built-in deterministic Agent Card.
+    pub fn new_with_builtin_agent(
+        identity: NodeIdentity,
+        runtime_identity: RuntimeHostIdentity,
+        listen_endpoint: impl Into<String>,
+        connect_endpoint: Option<String>,
+    ) -> Result<Self, NodeBuildError> {
+        let agent_service = AgentService::new();
+        let agent_handle = agent_service.handle();
+        let bindings = vec![
+            runtime_status_binding(identity.clone())?,
+            agent_query_binding(&identity.node_id, agent_handle.clone()).map_err(|error| {
+                NodeBuildError::context("could not construct Agent Fabric binding", error)
+            })?,
+        ];
+        let fabric = FabricService::new_with_bindings(listen_endpoint, connect_endpoint, bindings)
+            .map_err(|error| NodeBuildError::context("could not construct FabricService", error))?;
+        let fabric_handle = fabric.handle();
+
+        let definition = builtin_agent_definition();
+        let card_key = CardKey::new(BUILTIN_AGENT_CARD_KEY);
+        let deck = DeckSpec {
+            key: DeckKey::new(BUILTIN_AGENT_DECK_KEY),
+            cards: vec![Card {
+                key: card_key.clone(),
+                definition: definition.clone(),
+            }],
+        };
+        let compiler = DeckCompiler::new([definition])
+            .map_err(|error| NodeBuildError::context("invalid built-in Deck compiler", error))?;
+        let lock = compiler
+            .compile(&deck)
+            .map_err(|error| NodeBuildError::context("could not compile built-in Deck", error))?;
+        let card = AgentCard::new(card_key, agent_handle);
+        let launch = DeckLaunch::new(lock, vec![Box::new(card)]).map_err(|error| {
+            NodeBuildError::context("could not bind built-in Deck implementation", error)
+        })?;
+        let core_services: Vec<Box<dyn CoreService>> =
+            vec![Box::new(fabric), Box::new(agent_service)];
+        let runtime = RuntimeHost::with_deck(runtime_identity, core_services, launch)
+            .map_err(|error| NodeBuildError::context("could not construct RuntimeHost", error))?;
+
+        Ok(Self {
+            identity,
+            runtime,
             fabric_handle,
         })
     }
@@ -126,6 +181,16 @@ pub async fn probe_node(
 
 fn runtime_status_key(node_id: &NodeId) -> String {
     format!("paraegox/v1/nodes/{}/runtime/status", node_id.as_str())
+}
+
+fn runtime_status_binding(node: NodeIdentity) -> Result<FabricQueryBinding, FabricError> {
+    FabricQueryBinding::new(
+        runtime_status_key(&node.node_id),
+        move |runtime, _payload| {
+            let result = encode_runtime_status(&node, runtime).map_err(|error| error.to_string());
+            async move { result }
+        },
+    )
 }
 
 fn encode_runtime_status(
@@ -177,3 +242,30 @@ impl Display for NodeStatusError {
 }
 
 impl Error for NodeStatusError {}
+
+#[derive(Debug)]
+pub struct NodeBuildError {
+    message: String,
+}
+
+impl NodeBuildError {
+    fn context(context: &str, error: impl Display) -> Self {
+        Self {
+            message: format!("{context}: {error}"),
+        }
+    }
+}
+
+impl From<FabricError> for NodeBuildError {
+    fn from(error: FabricError) -> Self {
+        Self::context("could not construct Fabric query binding", error)
+    }
+}
+
+impl Display for NodeBuildError {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl Error for NodeBuildError {}

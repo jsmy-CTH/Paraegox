@@ -7,6 +7,8 @@ repository.workspace = true
 publish = false
 
 [dependencies]
+paraegox-agent = { path = "../paraegox-agent" }
+paraegox-deck = { path = "../paraegox-deck" }
 paraegox-fabric = { path = "../paraegox-fabric" }
 paraegox-kernel = { path = "../paraegox-kernel" }
 paraegox-runtime = { path = "../paraegox-runtime" }

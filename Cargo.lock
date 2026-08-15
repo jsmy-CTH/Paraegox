@@ -1081,11 +1081,35 @@ checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
 name = "paraegox"
 version = "0.1.0"
 dependencies = [
+ "paraegox-agent",
  "paraegox-kernel",
  "paraegox-node",
  "paraegox-runtime",
  "serde_json",
  "tokio",
+]
+
+[[package]]
+name = "paraegox-agent"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "paraegox-deck",
+ "paraegox-fabric",
+ "paraegox-kernel",
+ "paraegox-runtime",
+ "serde",
+ "serde_json",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "paraegox-deck"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "sha2",
 ]
 
 [[package]]
@@ -1112,6 +1136,8 @@ dependencies = [
 name = "paraegox-node"
 version = "0.1.0"
 dependencies = [
+ "paraegox-agent",
+ "paraegox-deck",
  "paraegox-fabric",
  "paraegox-kernel",
  "paraegox-runtime",
@@ -1124,9 +1150,11 @@ name = "paraegox-runtime"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "paraegox-deck",
  "paraegox-kernel",
  "serde",
  "tokio",
+ "uuid",
 ]
 
 [[package]]
@@ -1626,6 +1654,17 @@ dependencies = [
  "ryu",
  "serde",
  "unsafe-libyaml",
+]
+
+[[package]]
+name = "sha2"
+version = "0.10.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a7507d819769d01a365ab707794a4084392c824f54a7a6a7862f8c3d0892b283"
+dependencies = [
+ "cfg-if",
+ "cpufeatures",
+ "digest",
 ]
 
 [[package]]

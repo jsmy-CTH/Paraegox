@@ -1,6 +1,8 @@
 [workspace]
 members = [
     "crates/paraegox",
+    "crates/paraegox-agent",
+    "crates/paraegox-deck",
     "crates/paraegox-fabric",
     "crates/paraegox-kernel",
     "crates/paraegox-node",
@@ -18,6 +20,7 @@ repository = "https://github.com/jsmy-CTH/Paraegox"
 async-trait = "0.1.89"
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.140"
+sha2 = "0.10.9"
 tokio = { version = "1.47.1", default-features = false }
 uuid = { version = "1.18.0", features = ["serde", "v4"] }
 zenoh = { version = "=1.9.0", default-features = false, features = ["transport_tcp"] }

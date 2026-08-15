@@ -1,5 +1,5 @@
 [package]
-name = "paraegox-runtime"
+name = "paraegox-agent"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,13 +9,13 @@ publish = false
 [dependencies]
 async-trait.workspace = true
 paraegox-deck = { path = "../paraegox-deck" }
+paraegox-fabric = { path = "../paraegox-fabric" }
 paraegox-kernel = { path = "../paraegox-kernel" }
+paraegox-runtime = { path = "../paraegox-runtime" }
 serde.workspace = true
-tokio = { workspace = true, features = ["time"] }
+serde_json.workspace = true
+tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
 uuid.workspace = true
-
-[dev-dependencies]
-tokio = { workspace = true, features = ["macros", "rt"] }
 
 [lints]
 workspace = true

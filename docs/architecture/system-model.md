@@ -65,24 +65,37 @@ Card 只能取得 validated config、窄 Port handle、cancellation/clock 和显
 
 ## 当前可执行路径
 
-当前基线不以普通客户端冒充分布式 Node，而是让两个 Node 各自运行 RuntimeHost 与长期 FabricService session，再由 Node B 使用自己的 session 请求 Node A：
+当前有两条共享同一 Node、RuntimeHost 和 Fabric 边界的可执行路径。
+
+第一条是同机双 Node。两个进程分别拥有自己的 Node identity、RuntimeHost epoch 与长期 Fabric session，Node B 使用自己的 session 请求 Node A：
 
 ```text
-Process A: paraegox node run --node-id node-a --listen ...:7447
-    Node(node-a, incarnation)
-        └── RuntimeHost(host identity, epoch)
-            └── FabricService(ready)
-
-Process B: paraegox node run --node-id node-b --listen ...:7448
-                             --connect ...:7447 --probe-peer node-a
-    Node(node-b, incarnation)
-        └── RuntimeHost(host identity, epoch)
-            └── FabricService(ready, long-lived session)
-                → bounded peer request
-                → Node A / Runtime lifecycle snapshot
+Process A: Node A → RuntimeHost → FabricService
+Process B: Node B → RuntimeHost → FabricService → bounded peer request → Node A status
 ```
 
-这条路径证明了同机 loopback 上两个真实 Node 的 identity、生命周期、停止与重连边界。外部 `node probe` 仍只是诊断客户端，不计作第二个 Node。当前没有远程认证与加密，因此不声称已完成跨宿主通信或具身执行闭环；窄 peer 请求只读取 Node、RuntimeHost 和 FabricService 的 identity 与 readiness，不演变为通用控制面。
+它证明了 loopback 上两个真实 Node 的 identity、生命周期、停止与重连。外部 `node probe` 仍只是诊断客户端，不计作第二个 Node。
+
+第二条是在一个 Node 上运行最小 Agent Deck，再由独立终端进程通过同一 Fabric 进入 AgentService：
+
+```text
+Process A: paraegox node run --node-id node-a --deck builtin-agent
+    Node(node-a, incarnation)
+        └── RuntimeHost(host identity, epoch)
+            ├── FabricService(status + agent exact bindings)
+            ├── AgentService(ephemeral sessions, ordered history, one active turn)
+            └── DeckRun(lock identity, generation)
+                └── Agent CardInstance(profile admission)
+
+Process B: paraegox tui --target node-a
+    AgentConversationClient → Fabric → AgentService → one terminal
+```
+
+RuntimeHost 生成 DeckRunId、CardInstanceId 与 generation；CLI 不伪造运行事实。Agent Card 激活 profile 后对话才能入场，成功才提交 user/final，取消、超时或被中止的 future 会封存为唯一 `Cancelled`/`TimedOut` terminal 而不写入成功历史。Session 与幂等记录都有上限，最旧的 inactive Session 可被淘汰。
+
+CoreService 按当前 Node composition 安装。没有 Agent workload 的 Node 不为证明框架而常驻 AgentService 或 Agent binding；选择 `builtin-agent` 时，AgentService、binding 与真实 Card consumer 在同一条路径出现。当前回答器只是 deterministic provider，用来证明第二轮读取的是服务端历史，不代表真实模型已经接入。
+
+两条路径目前都限制在 loopback。没有远程认证与加密，因此不声称已完成跨宿主通信或具身执行闭环。
 
 ## Golden scenario
 

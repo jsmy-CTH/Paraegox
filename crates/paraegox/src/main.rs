@@ -1,12 +1,14 @@
 use std::error::Error;
-use std::io::{self, Write};
+use std::io::{self, IsTerminal, Write};
 use std::process::ExitCode;
 use std::str::FromStr;
 use std::time::Duration;
 
+use paraegox_agent::{AgentConversationClient, SessionId, TurnId, TurnTerminal};
 use paraegox_kernel::{NodeId, RuntimeHostId};
 use paraegox_node::{Node, NodeIdentity, probe_node};
 use paraegox_runtime::RuntimeHostIdentity;
+use tokio::io::{AsyncBufReadExt, BufReader};
 
 const DEFAULT_ENDPOINT: &str = "tcp/127.0.0.1:7447";
 const DEFAULT_PROBE_TIMEOUT_MS: u64 = 2_000;
@@ -16,11 +18,12 @@ const HELP: &str = "Paraegox — distributed embodied-intelligence Agent OS
 Usage:
   paraegox --help
   paraegox --version
-  paraegox node run --node-id <id> [--listen <loopback-tcp-endpoint>] [--connect <loopback-tcp-endpoint> --probe-peer <id> [--timeout-ms <ms>]]
+  paraegox node run --node-id <id> [--deck builtin-agent] [--listen <loopback-tcp-endpoint>] [--connect <loopback-tcp-endpoint> --probe-peer <id> [--timeout-ms <ms>]]
   paraegox node probe --target <id> [--connect <loopback-tcp-endpoint>] [--timeout-ms <ms>]
+  paraegox tui --target <id> [--connect <loopback-tcp-endpoint>] [--timeout-ms <ms>]
 
 Current capability:
-  Two addressable Nodes can run on same-host loopback; one Node can probe its configured peer through its own long-lived Fabric session.
+  Two addressable Nodes can run on same-host loopback. A Node can also run the built-in Agent Deck for an independent terminal conversation.
 
 Defaults:
   --listen / --connect  tcp/127.0.0.1:7447
@@ -43,12 +46,28 @@ async fn main() -> ExitCode {
             connect_endpoint,
             peer,
             timeout,
-        }) => finish(run_node(node_id, listen_endpoint, connect_endpoint, peer, timeout).await),
+            deck,
+        }) => finish(
+            run_node(
+                node_id,
+                listen_endpoint,
+                connect_endpoint,
+                peer,
+                timeout,
+                deck,
+            )
+            .await,
+        ),
         Ok(Command::Probe {
             target,
             connect_endpoint,
             timeout,
         }) => finish(run_probe(target, connect_endpoint, timeout).await),
+        Ok(Command::Tui {
+            target,
+            connect_endpoint,
+            timeout,
+        }) => finish(run_tui(target, connect_endpoint, timeout).await),
         Err(error) => {
             eprintln!("error: {error}\n\n{HELP}");
             ExitCode::from(2)
@@ -72,16 +91,25 @@ async fn run_node(
     connect_endpoint: Option<String>,
     peer: Option<NodeId>,
     timeout: Duration,
+    deck: Option<DeckSelection>,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     let identity = NodeIdentity::new(node_id);
     let runtime_host_id = RuntimeHostId::new(format!("{}:runtime-0", identity.node_id))?;
     let runtime_identity = RuntimeHostIdentity::new(runtime_host_id);
-    let mut node = Node::new(
-        identity,
-        runtime_identity,
-        listen_endpoint,
-        connect_endpoint,
-    )?;
+    let mut node = match deck {
+        Some(DeckSelection::BuiltinAgent) => Node::new_with_builtin_agent(
+            identity,
+            runtime_identity,
+            listen_endpoint,
+            connect_endpoint,
+        )?,
+        None => Node::new(
+            identity,
+            runtime_identity,
+            listen_endpoint,
+            connect_endpoint,
+        )?,
+    };
 
     node.start().await?;
     let running_result: Result<(), Box<dyn Error + Send + Sync>> = async {
@@ -126,6 +154,84 @@ async fn run_probe(
     Ok(())
 }
 
+async fn run_tui(
+    target: NodeId,
+    connect_endpoint: String,
+    timeout: Duration,
+) -> Result<(), Box<dyn Error + Send + Sync>> {
+    let session_id = SessionId::new();
+    let mut client =
+        AgentConversationClient::connect(&connect_endpoint, target, session_id, timeout).await?;
+    let interactive = io::stdin().is_terminal();
+    let mut lines = BufReader::new(tokio::io::stdin()).lines();
+
+    let conversation_result: Result<(), Box<dyn Error + Send + Sync>> = async {
+        'conversation: loop {
+            if interactive {
+                print!("> ");
+                io::stdout().flush()?;
+            }
+
+            let input = tokio::select! {
+                line = lines.next_line() => line?,
+                signal = tokio::signal::ctrl_c() => {
+                    signal?;
+                    break 'conversation;
+                }
+            };
+            let Some(input) = input else {
+                break;
+            };
+            if input == "/quit" {
+                break;
+            }
+            if input.trim().is_empty() {
+                continue;
+            }
+
+            let turn_id = TurnId::new();
+            let result = tokio::select! {
+                result = client.submit_turn(turn_id, &input, timeout) => result?,
+                signal = tokio::signal::ctrl_c() => {
+                    signal?;
+                    client.cancel(turn_id, timeout).await?;
+                    break 'conversation;
+                }
+            };
+            match result.terminal {
+                TurnTerminal::Final { content } => println!("agent> {content}"),
+                TurnTerminal::Cancelled => {
+                    return Err(io::Error::other("Agent turn was cancelled").into());
+                }
+                TurnTerminal::TimedOut => {
+                    return Err(
+                        io::Error::new(io::ErrorKind::TimedOut, "Agent turn timed out").into(),
+                    );
+                }
+            }
+            io::stdout().flush()?;
+        }
+        Ok(())
+    }
+    .await;
+
+    let close_result = client.close(timeout).await;
+    match (conversation_result, close_result) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(()), Err(error)) => Err(error.into()),
+        (Err(error), Err(close_error)) => Err(io::Error::other(format!(
+            "{error}; closing the Agent conversation also failed: {close_error}"
+        ))
+        .into()),
+    }
+}
+
+#[derive(Clone, Copy)]
+enum DeckSelection {
+    BuiltinAgent,
+}
+
 enum Command {
     Help,
     Version,
@@ -135,8 +241,14 @@ enum Command {
         connect_endpoint: Option<String>,
         peer: Option<NodeId>,
         timeout: Duration,
+        deck: Option<DeckSelection>,
     },
     Probe {
+        target: NodeId,
+        connect_endpoint: String,
+        timeout: Duration,
+    },
+    Tui {
         target: NodeId,
         connect_endpoint: String,
         timeout: Duration,
@@ -152,6 +264,7 @@ fn parse_command(arguments: Vec<String>) -> Result<Command, String> {
         [scope, operation, rest @ ..] if scope == "node" && operation == "probe" => {
             parse_probe(rest)
         }
+        [scope, rest @ ..] if scope == "tui" => parse_tui(rest),
         [argument, ..] => Err(format!("unknown argument or command `{argument}`")),
     }
 }
@@ -164,6 +277,7 @@ fn parse_run(arguments: &[String]) -> Result<Command, String> {
     let mut peer = None;
     let mut timeout_ms = DEFAULT_PROBE_TIMEOUT_MS;
     let mut timeout_was_set = false;
+    let mut deck = None;
     let mut index = 0;
 
     while index < arguments.len() {
@@ -186,7 +300,13 @@ fn parse_run(arguments: &[String]) -> Result<Command, String> {
                 timeout_ms = parse_timeout_ms(value)?;
                 timeout_was_set = true;
             }
-            "--node-id" | "--listen" | "--connect" | "--probe-peer" | "--timeout-ms" => {
+            "--deck" if deck.is_none() => {
+                deck = Some(match value {
+                    "builtin-agent" => DeckSelection::BuiltinAgent,
+                    _ => return Err(format!("unknown Deck `{value}`; expected `builtin-agent`")),
+                });
+            }
+            "--node-id" | "--listen" | "--connect" | "--probe-peer" | "--timeout-ms" | "--deck" => {
                 return Err(format!("duplicate option `{name}`"));
             }
             _ => return Err(format!("unknown node run option `{name}`")),
@@ -214,6 +334,7 @@ fn parse_run(arguments: &[String]) -> Result<Command, String> {
         connect_endpoint,
         peer,
         timeout: Duration::from_millis(timeout_ms),
+        deck,
     })
 }
 
@@ -249,6 +370,44 @@ fn parse_probe(arguments: &[String]) -> Result<Command, String> {
 
     let target = target.ok_or_else(|| "node probe requires --target <id>".to_owned())?;
     Ok(Command::Probe {
+        target,
+        connect_endpoint,
+        timeout: Duration::from_millis(timeout_ms),
+    })
+}
+
+fn parse_tui(arguments: &[String]) -> Result<Command, String> {
+    let mut target = None;
+    let mut connect_endpoint = DEFAULT_ENDPOINT.to_owned();
+    let mut timeout_ms = DEFAULT_PROBE_TIMEOUT_MS;
+    let mut connect_was_set = false;
+    let mut timeout_was_set = false;
+    let mut index = 0;
+
+    while index < arguments.len() {
+        let (name, value) = option_pair(arguments, index)?;
+        match name {
+            "--target" if target.is_none() => {
+                target = Some(NodeId::from_str(value).map_err(|error| error.to_string())?);
+            }
+            "--connect" if !connect_was_set => {
+                connect_endpoint = value.to_owned();
+                connect_was_set = true;
+            }
+            "--timeout-ms" if !timeout_was_set => {
+                timeout_ms = parse_timeout_ms(value)?;
+                timeout_was_set = true;
+            }
+            "--target" | "--connect" | "--timeout-ms" => {
+                return Err(format!("duplicate option `{name}`"));
+            }
+            _ => return Err(format!("unknown tui option `{name}`")),
+        }
+        index += 2;
+    }
+
+    let target = target.ok_or_else(|| "tui requires --target <id>".to_owned())?;
+    Ok(Command::Tui {
         target,
         connect_endpoint,
         timeout: Duration::from_millis(timeout_ms),
