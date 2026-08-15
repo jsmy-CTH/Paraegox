@@ -1093,6 +1093,7 @@ name = "paraegox-fabric"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "paraegox-kernel",
  "paraegox-runtime",
  "serde_json",
  "tokio",

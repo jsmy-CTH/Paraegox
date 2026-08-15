@@ -4,7 +4,7 @@ use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 use std::time::Duration;
 
-use paraegox_fabric::{FabricError, FabricService, query_one};
+use paraegox_fabric::{FabricError, FabricHandle, FabricService, query_one};
 use paraegox_kernel::{NodeId, NodeIncarnation};
 use paraegox_runtime::{
     RuntimeHost, RuntimeHostError, RuntimeHostIdentity, RuntimeHostSnapshot, RuntimeHostState,
@@ -57,6 +57,7 @@ impl NodeRuntimeStatus {
 pub struct Node {
     identity: NodeIdentity,
     runtime: RuntimeHost<FabricService>,
+    fabric_handle: FabricHandle,
 }
 
 impl Node {
@@ -64,18 +65,22 @@ impl Node {
         identity: NodeIdentity,
         runtime_identity: RuntimeHostIdentity,
         listen_endpoint: impl Into<String>,
+        connect_endpoint: Option<String>,
     ) -> Result<Self, FabricError> {
         let binding_node = identity.clone();
-        let fabric = FabricService::new(
+        let fabric = FabricService::new_with_connect_endpoint(
             listen_endpoint,
+            connect_endpoint,
             runtime_status_key(&identity.node_id),
             move |runtime| {
                 encode_runtime_status(&binding_node, runtime).map_err(|error| error.to_string())
             },
         )?;
+        let fabric_handle = fabric.handle();
         Ok(Self {
             identity,
             runtime: RuntimeHost::new(runtime_identity, fabric),
+            fabric_handle,
         })
     }
 
@@ -89,6 +94,22 @@ impl Node {
 
     pub async fn stop(&mut self) -> Result<(), RuntimeHostError> {
         self.runtime.stop().await
+    }
+
+    pub async fn probe_peer(
+        &self,
+        target: &NodeId,
+        deadline: Duration,
+    ) -> Result<NodeRuntimeStatus, NodeStatusError> {
+        if target == &self.identity.node_id {
+            return Err(NodeStatusError::new("a Node cannot probe itself as a peer"));
+        }
+        let payload = self
+            .fabric_handle
+            .query_one(&runtime_status_key(target), deadline)
+            .await
+            .map_err(|error| NodeStatusError::new(error.to_string()))?;
+        decode_runtime_status(target, &payload)
     }
 }
 

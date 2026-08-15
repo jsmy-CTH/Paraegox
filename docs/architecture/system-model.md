@@ -63,23 +63,26 @@ AgentService 仍是 CoreService，拥有 Session、Turn、Model Provider 调用�
 
 Card 只能取得 validated config、窄 Port handle、cancellation/clock 和显式 typed CoreService client。它不能取得完整 RuntimeHost、raw Fabric/Zenoh、Driver、Secret 或动态 service locator。Card 间正式交互必须经过编译并安装的 typed binding；同进程不得产生 direct-call 旁路。
 
-## 当前第一条可执行路径
+## 当前可执行路径
 
-第一里程碑不先做孤立聊天应用，而是先证明一个 Node 可以被外部进程寻址，并在其上真实运行 RuntimeHost 和 FabricService：
+当前基线不以普通客户端冒充分布式 Node，而是让两个 Node 各自运行 RuntimeHost 与长期 FabricService session，再由 Node B 使用自己的 session 请求 Node A：
 
 ```text
-Process A: paraegox node run --node-id node-a
+Process A: paraegox node run --node-id node-a --listen ...:7447
     Node(node-a, incarnation)
         └── RuntimeHost(host identity, epoch)
             └── FabricService(ready)
 
-Process B: paraegox node probe --target node-a
-    → Fabric request
-    → Node / Runtime lifecycle snapshot
-    → bounded terminal response
+Process B: paraegox node run --node-id node-b --listen ...:7448
+                             --connect ...:7447 --probe-peer node-a
+    Node(node-b, incarnation)
+        └── RuntimeHost(host identity, epoch)
+            └── FabricService(ready, long-lived session)
+                → bounded peer request
+                → Node A / Runtime lifecycle snapshot
 ```
 
-这条路径证明了一个可寻址 Node 的跨进程分布式基线，但不声称已完成双 Node、跨宿主或具身执行闭环。窄 probe 只读取 Node、RuntimeHost 和 FabricService 的 identity 与 readiness，不演变为通用控制面。
+这条路径证明了同机 loopback 上两个真实 Node 的 identity、生命周期、停止与重连边界。外部 `node probe` 仍只是诊断客户端，不计作第二个 Node。当前没有远程认证与加密，因此不声称已完成跨宿主通信或具身执行闭环；窄 peer 请求只读取 Node、RuntimeHost 和 FabricService 的 identity 与 readiness，不演变为通用控制面。
 
 ## Golden scenario
 
