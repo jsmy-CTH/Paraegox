@@ -17,7 +17,7 @@ cargo run --locked --bin paraegox -- node run \
   --deck builtin-agent
 ```
 
-再在另一个终端连接：
+再在另一个终端连接（当前是刻意保持简单的行式终端界面，输入 `/quit` 退出）：
 
 ```bash
 cargo run --locked --bin paraegox -- tui \
@@ -58,7 +58,7 @@ cargo run --locked --bin paraegox -- node run \
   --deck builtin-agent
 ```
 
-Connect from another terminal:
+Connect from another terminal (the current UI is intentionally line-oriented; enter `/quit` to exit):
 
 ```bash
 cargo run --locked --bin paraegox -- tui \

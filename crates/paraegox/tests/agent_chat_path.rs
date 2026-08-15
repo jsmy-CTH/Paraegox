@@ -9,7 +9,7 @@ use paraegox_agent::BUILTIN_AGENT_DEFINITION;
 use serde_json::Value;
 
 const NODE_ID: &str = "agent-chat-node";
-const FIRST_INPUT: &str = "inspect the red lamp";
+const FIRST_INPUT: &str = "remember project alpha";
 const SECOND_INPUT: &str = "what did I ask before?";
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
 const CHAT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -183,12 +183,13 @@ fn builtin_deck_runs_real_card_and_tui_preserves_server_history() {
     let mut stdin = tui.stdin.take().expect("TUI stdin should be piped");
     writeln!(stdin, "{FIRST_INPUT}").expect("first input should be written");
     writeln!(stdin, "{SECOND_INPUT}").expect("second input should be written");
+    writeln!(stdin, "/quit").expect("quit command should be written");
     drop(stdin);
 
     let output = wait_for_output(tui, CHAT_TIMEOUT);
     assert!(
         output.status.success(),
-        "TUI should exit cleanly on EOF; stderr: {}",
+        "TUI should exit cleanly on /quit; stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8(output.stdout).expect("TUI stdout should be UTF-8");
