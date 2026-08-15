@@ -12,6 +12,8 @@ paraegox-deck = { path = "../paraegox-deck" }
 paraegox-fabric = { path = "../paraegox-fabric" }
 paraegox-kernel = { path = "../paraegox-kernel" }
 paraegox-runtime = { path = "../paraegox-runtime" }
+reqwest.workspace = true
+secrecy.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }

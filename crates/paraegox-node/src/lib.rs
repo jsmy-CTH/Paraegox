@@ -4,7 +4,10 @@ use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 use std::time::Duration;
 
-use paraegox_agent::{AgentCard, AgentService, agent_query_binding, builtin_agent_definition};
+use paraegox_agent::{
+    AgentCard, AgentService, DeepSeekV4FlashConfig, agent_query_binding, builtin_agent_definition,
+    deepseek_v4_flash_agent_definition,
+};
 use paraegox_deck::{Card, CardKey, DeckCompiler, DeckKey, DeckSpec};
 use paraegox_fabric::{FabricError, FabricHandle, FabricQueryBinding, FabricService, query_one};
 use paraegox_kernel::{NodeId, NodeIncarnation};
@@ -124,6 +127,58 @@ impl Node {
             .compile(&deck)
             .map_err(|error| NodeBuildError::context("could not compile built-in Deck", error))?;
         let card = AgentCard::new(card_key, agent_handle);
+        let launch = DeckLaunch::new(lock, vec![Box::new(card)]).map_err(|error| {
+            NodeBuildError::context("could not bind built-in Deck implementation", error)
+        })?;
+        let core_services: Vec<Box<dyn CoreService>> =
+            vec![Box::new(fabric), Box::new(agent_service)];
+        let runtime = RuntimeHost::with_deck(runtime_identity, core_services, launch)
+            .map_err(|error| NodeBuildError::context("could not construct RuntimeHost", error))?;
+
+        Ok(Self {
+            identity,
+            runtime,
+            fabric_handle,
+        })
+    }
+
+    /// Constructs the built-in Agent Deck with one DeepSeek V4 Flash-backed Card.
+    pub fn new_with_deepseek_v4_flash_agent(
+        identity: NodeIdentity,
+        runtime_identity: RuntimeHostIdentity,
+        listen_endpoint: impl Into<String>,
+        connect_endpoint: Option<String>,
+        config: DeepSeekV4FlashConfig,
+    ) -> Result<Self, NodeBuildError> {
+        let agent_service = AgentService::with_deepseek_v4_flash(config).map_err(|error| {
+            NodeBuildError::context("could not construct DeepSeek AgentService", error)
+        })?;
+        let agent_handle = agent_service.handle();
+        let bindings = vec![
+            runtime_status_binding(identity.clone())?,
+            agent_query_binding(&identity.node_id, agent_handle.clone()).map_err(|error| {
+                NodeBuildError::context("could not construct Agent Fabric binding", error)
+            })?,
+        ];
+        let fabric = FabricService::new_with_bindings(listen_endpoint, connect_endpoint, bindings)
+            .map_err(|error| NodeBuildError::context("could not construct FabricService", error))?;
+        let fabric_handle = fabric.handle();
+
+        let definition = deepseek_v4_flash_agent_definition();
+        let card_key = CardKey::new(BUILTIN_AGENT_CARD_KEY);
+        let deck = DeckSpec {
+            key: DeckKey::new(BUILTIN_AGENT_DECK_KEY),
+            cards: vec![Card {
+                key: card_key.clone(),
+                definition: definition.clone(),
+            }],
+        };
+        let compiler = DeckCompiler::new([definition])
+            .map_err(|error| NodeBuildError::context("invalid built-in Deck compiler", error))?;
+        let lock = compiler
+            .compile(&deck)
+            .map_err(|error| NodeBuildError::context("could not compile built-in Deck", error))?;
+        let card = AgentCard::new_deepseek_v4_flash(card_key, agent_handle);
         let launch = DeckLaunch::new(lock, vec![Box::new(card)]).map_err(|error| {
             NodeBuildError::context("could not bind built-in Deck implementation", error)
         })?;

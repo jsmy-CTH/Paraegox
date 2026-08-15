@@ -97,6 +97,16 @@ CoreService 按当前 Node composition 安装。没有 Agent workload 的 Node �
 
 两条路径目前都限制在 loopback。没有远程认证与加密，因此不声称已完成跨宿主通信或具身执行闭环。
 
+### M4 真实模型候选边界
+
+M4 只允许一个外部 Provider 候选：DeepSeek V4 Flash 的非流式 Chat Completions。选择 `--provider deepseek-v4-flash` 时，AgentService 仍然是 Session、成功历史、deadline、cancel 和唯一 terminal 的 owner；Provider adapter 只把已提交的 `system/user/assistant` 消息映射到一次有界模型调用，再把完整成功响应交回 AgentService。省略 `--provider` 时继续使用已经验证的 deterministic responder。
+
+`DEEPSEEK_API_KEY` 只从 Node 进程环境读取，不进入 Card、DeckLock、Fabric wire、TUI、命令行或状态快照。生产 endpoint 与 model 都固定，不接受 Deck 或客户端提供的自定义 URL。外部模式会把对话内容发送给 DeepSeek，因此它不是本地数据路径；测试和首次 smoke 只能使用明确允许发送的非敏感文本。
+
+M4 不建立 Provider registry、router、fallback、自动 retry、stream、Tool Calling 或通用模型配置系统。DeepSeek 没有被当前设计依赖的远端 cancel 合同；本地 deadline/cancel 终止等待并封存一个 terminal，晚到响应不得写入 Session，但不能据此宣称远端推理或计费已经停止。
+
+该路径在进入 main、通过 Ubuntu CI，并在指定服务器用进程环境中的真实凭据完成 Node/TUI 两轮 smoke 之前，只是当前候选，不是已经完成的外部模型能力。M3 deterministic Deck/Agent 路径已经在 main，指定服务器对 M3 revision 的 clean-checkout smoke 仍待网络恢复后补充。
+
 ## Golden scenario
 
 长期保留的具身验收场景是：
@@ -130,7 +140,7 @@ Agent 基于同一 Session 理解请求，消费带来源和时效的 Observatio
 1. 收口单个可寻址 Node、RuntimeHost、FabricService 与外部进程 probe，并在服务器验证后合入 main。
 2. 建立两个真实 Node；每个 Node 使用自己长期持有的 Fabric session 完成有界 peer 请求。先做同机双 Node，不把普通 probe client冒充第二个 Node。
 3. 引入最小 Deck/Card 执行语义，并让 RuntimeHost 创建真实 DeckRun/CardInstance；Deck substrate 不脱离同批真实 Card consumer 单独合并。
-4. 在 Deck 中运行 Agent Card，由 AgentService 和薄 TUI 完成确定性、再到真实模型的有上下文对话。
+4. 在 Deck 中运行 Agent Card，由 AgentService 和薄 TUI 先完成确定性对话，再以一个固定、非流式 Provider 完成真实模型的有上下文对话。
 5. 加入首个 typed Card Link、模拟 DeviceService、Observation、受约束 Command、readback 和 Unknown 不重放语义。
 6. 将同一 Deck 的 Card 分布到两个 Node，通过认证加密的跨宿主 Fabric 完成模拟具身闭环。
 7. 在不改变上层合同的前提下接入一个低风险、可逆、可回读的真实设备。
