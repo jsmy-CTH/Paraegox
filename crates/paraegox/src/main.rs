@@ -16,11 +16,11 @@ const HELP: &str = "Paraegox — distributed embodied-intelligence Agent OS
 Usage:
   paraegox --help
   paraegox --version
-  paraegox node run --node-id <id> [--listen <loopback-tcp-endpoint>]
+  paraegox node run --node-id <id> [--listen <loopback-tcp-endpoint>] [--connect <loopback-tcp-endpoint> --probe-peer <id> [--timeout-ms <ms>]]
   paraegox node probe --target <id> [--connect <loopback-tcp-endpoint>] [--timeout-ms <ms>]
 
 Current capability:
-  One addressable Node can run RuntimeHost and FabricService; an external process can probe it.
+  Two addressable Nodes can run on same-host loopback; one Node can probe its configured peer through its own long-lived Fabric session.
 
 Defaults:
   --listen / --connect  tcp/127.0.0.1:7447
@@ -40,7 +40,10 @@ async fn main() -> ExitCode {
         Ok(Command::Run {
             node_id,
             listen_endpoint,
-        }) => finish(run_node(node_id, listen_endpoint).await),
+            connect_endpoint,
+            peer,
+            timeout,
+        }) => finish(run_node(node_id, listen_endpoint, connect_endpoint, peer, timeout).await),
         Ok(Command::Probe {
             target,
             connect_endpoint,
@@ -66,24 +69,51 @@ fn finish(result: Result<(), Box<dyn Error + Send + Sync>>) -> ExitCode {
 async fn run_node(
     node_id: NodeId,
     listen_endpoint: String,
+    connect_endpoint: Option<String>,
+    peer: Option<NodeId>,
+    timeout: Duration,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     let identity = NodeIdentity::new(node_id);
     let runtime_host_id = RuntimeHostId::new(format!("{}:runtime-0", identity.node_id))?;
     let runtime_identity = RuntimeHostIdentity::new(runtime_host_id);
-    let mut node = Node::new(identity, runtime_identity, listen_endpoint)?;
+    let mut node = Node::new(
+        identity,
+        runtime_identity,
+        listen_endpoint,
+        connect_endpoint,
+    )?;
 
     node.start().await?;
-    println!("{}", serde_json::to_string(&node.status()?)?);
-    io::stdout().flush()?;
+    let running_result: Result<(), Box<dyn Error + Send + Sync>> = async {
+        println!("{}", serde_json::to_string(&node.status()?)?);
+        io::stdout().flush()?;
 
-    if let Err(error) = tokio::signal::ctrl_c().await {
-        let stop_result = node.stop().await;
-        stop_result?;
-        return Err(error.into());
+        if let Some(target) = peer.as_ref() {
+            let status = node.probe_peer(target, timeout).await?;
+            println!(
+                "{}",
+                serde_json::json!({
+                    "peer": status,
+                })
+            );
+            io::stdout().flush()?;
+        }
+
+        tokio::signal::ctrl_c().await?;
+        Ok(())
     }
+    .await;
 
-    node.stop().await?;
-    Ok(())
+    let stop_result = node.stop().await;
+    match (running_result, stop_result) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(running_error), Ok(())) => Err(running_error),
+        (Ok(()), Err(stop_error)) => Err(stop_error.into()),
+        (Err(running_error), Err(stop_error)) => Err(io::Error::other(format!(
+            "{running_error}; stopping the local Node also failed: {stop_error}"
+        ))
+        .into()),
+    }
 }
 
 async fn run_probe(
@@ -102,6 +132,9 @@ enum Command {
     Run {
         node_id: NodeId,
         listen_endpoint: String,
+        connect_endpoint: Option<String>,
+        peer: Option<NodeId>,
+        timeout: Duration,
     },
     Probe {
         target: NodeId,
@@ -127,6 +160,10 @@ fn parse_run(arguments: &[String]) -> Result<Command, String> {
     let mut node_id = None;
     let mut listen_endpoint = DEFAULT_ENDPOINT.to_owned();
     let mut listen_was_set = false;
+    let mut connect_endpoint = None;
+    let mut peer = None;
+    let mut timeout_ms = DEFAULT_PROBE_TIMEOUT_MS;
+    let mut timeout_was_set = false;
     let mut index = 0;
 
     while index < arguments.len() {
@@ -139,16 +176,44 @@ fn parse_run(arguments: &[String]) -> Result<Command, String> {
                 listen_endpoint = value.to_owned();
                 listen_was_set = true;
             }
-            "--node-id" | "--listen" => return Err(format!("duplicate option `{name}`")),
+            "--connect" if connect_endpoint.is_none() => {
+                connect_endpoint = Some(value.to_owned());
+            }
+            "--probe-peer" if peer.is_none() => {
+                peer = Some(NodeId::from_str(value).map_err(|error| error.to_string())?);
+            }
+            "--timeout-ms" if !timeout_was_set => {
+                timeout_ms = parse_timeout_ms(value)?;
+                timeout_was_set = true;
+            }
+            "--node-id" | "--listen" | "--connect" | "--probe-peer" | "--timeout-ms" => {
+                return Err(format!("duplicate option `{name}`"));
+            }
             _ => return Err(format!("unknown node run option `{name}`")),
         }
         index += 2;
     }
 
     let node_id = node_id.ok_or_else(|| "node run requires --node-id <id>".to_owned())?;
+    match (&connect_endpoint, &peer) {
+        (Some(_), Some(_)) => {}
+        (None, None) if !timeout_was_set => {}
+        (None, None) => {
+            return Err("node run --timeout-ms requires --connect and --probe-peer".to_owned());
+        }
+        _ => {
+            return Err("node run --connect and --probe-peer must be used together".to_owned());
+        }
+    }
+    if peer.as_ref() == Some(&node_id) {
+        return Err("node run --probe-peer must name a different Node".to_owned());
+    }
     Ok(Command::Run {
         node_id,
         listen_endpoint,
+        connect_endpoint,
+        peer,
+        timeout: Duration::from_millis(timeout_ms),
     })
 }
 
@@ -171,12 +236,7 @@ fn parse_probe(arguments: &[String]) -> Result<Command, String> {
                 connect_was_set = true;
             }
             "--timeout-ms" if !timeout_was_set => {
-                timeout_ms = value
-                    .parse::<u64>()
-                    .map_err(|_| "--timeout-ms must be an integer".to_owned())?;
-                if !(100..=60_000).contains(&timeout_ms) {
-                    return Err("--timeout-ms must be between 100 and 60000".to_owned());
-                }
+                timeout_ms = parse_timeout_ms(value)?;
                 timeout_was_set = true;
             }
             "--target" | "--connect" | "--timeout-ms" => {
@@ -193,6 +253,16 @@ fn parse_probe(arguments: &[String]) -> Result<Command, String> {
         connect_endpoint,
         timeout: Duration::from_millis(timeout_ms),
     })
+}
+
+fn parse_timeout_ms(value: &str) -> Result<u64, String> {
+    let timeout_ms = value
+        .parse::<u64>()
+        .map_err(|_| "--timeout-ms must be an integer".to_owned())?;
+    if !(100..=60_000).contains(&timeout_ms) {
+        return Err("--timeout-ms must be between 100 and 60000".to_owned());
+    }
+    Ok(timeout_ms)
 }
 
 fn option_pair(arguments: &[String], index: usize) -> Result<(&str, &str), String> {

@@ -2,6 +2,7 @@
 
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
+use std::sync::{Arc, RwLock, Weak};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -20,10 +21,24 @@ const SERVICE_OPERATION_TIMEOUT: Duration = Duration::from_secs(3);
 
 pub struct FabricService {
     listen_endpoint: String,
+    connect_endpoint: Option<String>,
     binding: Option<RuntimeStatusBinding>,
-    session: Option<Session>,
+    session: Option<Arc<Session>>,
     queryable: Option<Queryable<()>>,
     request_task: Option<JoinHandle<()>>,
+    handle_state: Arc<RwLock<FabricHandleState>>,
+}
+
+#[derive(Clone)]
+pub struct FabricHandle {
+    state: Arc<RwLock<FabricHandleState>>,
+}
+
+enum FabricHandleState {
+    NotStarted,
+    Running(Weak<Session>),
+    Stopping,
+    Stopped,
 }
 
 type StatusEncoder =
@@ -43,14 +58,30 @@ impl FabricService {
     where
         Encode: Fn(RuntimeHostSnapshot) -> Result<Vec<u8>, String> + Send + Sync + 'static,
     {
+        Self::new_with_connect_endpoint(listen_endpoint, None, binding_key, encode)
+    }
+
+    pub fn new_with_connect_endpoint<Encode>(
+        listen_endpoint: impl Into<String>,
+        connect_endpoint: Option<String>,
+        binding_key: impl Into<String>,
+        encode: Encode,
+    ) -> Result<Self, FabricError>
+    where
+        Encode: Fn(RuntimeHostSnapshot) -> Result<Vec<u8>, String> + Send + Sync + 'static,
+    {
         let listen_endpoint = listen_endpoint.into();
         validate_loopback_endpoint(&listen_endpoint)?;
+        if let Some(connect_endpoint) = connect_endpoint.as_deref() {
+            validate_loopback_endpoint(connect_endpoint)?;
+        }
         let binding_key = binding_key.into();
         if binding_key.is_empty() {
             return Err(FabricError::new("Fabric binding key must not be empty"));
         }
         Ok(Self {
             listen_endpoint,
+            connect_endpoint,
             binding: Some(RuntimeStatusBinding {
                 key: binding_key,
                 encode: Box::new(encode),
@@ -58,7 +89,14 @@ impl FabricService {
             session: None,
             queryable: None,
             request_task: None,
+            handle_state: Arc::new(RwLock::new(FabricHandleState::NotStarted)),
         })
+    }
+
+    pub fn handle(&self) -> FabricHandle {
+        FabricHandle {
+            state: Arc::clone(&self.handle_state),
+        }
     }
 
     async fn start_inner(&mut self, runtime: RuntimeStatusReader) -> Result<(), FabricError> {
@@ -70,7 +108,7 @@ impl FabricService {
             .take()
             .ok_or_else(|| FabricError::new("Fabric status binding is unavailable"))?;
 
-        let config = node_config(&self.listen_endpoint)?;
+        let config = node_config(&self.listen_endpoint, self.connect_endpoint.as_deref())?;
         let session = timeout(SERVICE_OPERATION_TIMEOUT, zenoh::open(config))
             .await
             .map_err(|_| FabricError::new("timed out opening the Fabric session"))?
@@ -104,14 +142,27 @@ impl FabricService {
         };
 
         let request_task = tokio::spawn(serve_status_requests(receiver, binding.encode, runtime));
-        self.session = Some(session);
+        self.session = Some(Arc::new(session));
         self.queryable = Some(queryable);
         self.request_task = Some(request_task);
+
+        if let Err(publish_error) = self.publish_session() {
+            return match self.stop_inner().await {
+                Ok(()) => Err(publish_error),
+                Err(cleanup_error) => Err(FabricError::new(format!(
+                    "{publish_error}; cleanup after publish failure also failed: {cleanup_error}"
+                ))),
+            };
+        }
         Ok(())
     }
 
     async fn stop_inner(&mut self) -> Result<(), FabricError> {
         let mut cleanup_errors = Vec::new();
+
+        if let Err(error) = self.begin_stop() {
+            cleanup_errors.push(error.to_string());
+        }
 
         if let Some(queryable) = self.queryable.take() {
             match timeout(SERVICE_OPERATION_TIMEOUT, queryable.undeclare()).await {
@@ -147,10 +198,107 @@ impl FabricService {
             }
         }
 
+        if let Err(error) = self.finish_stop() {
+            cleanup_errors.push(error.to_string());
+        }
+
         if cleanup_errors.is_empty() {
             Ok(())
         } else {
             Err(FabricError::new(cleanup_errors.join("; ")))
+        }
+    }
+
+    fn publish_session(&self) -> Result<(), FabricError> {
+        let session = self
+            .session
+            .as_ref()
+            .ok_or_else(|| FabricError::new("Fabric session is unavailable during start"))?;
+        let mut state = self.handle_state.write().map_err(|_| {
+            FabricError::new("Fabric handle state lock is poisoned while publishing the session")
+        })?;
+        *state = FabricHandleState::Running(Arc::downgrade(session));
+        Ok(())
+    }
+
+    fn begin_stop(&self) -> Result<(), FabricError> {
+        match self.handle_state.write() {
+            Ok(mut state) => {
+                *state = FabricHandleState::Stopping;
+                Ok(())
+            }
+            Err(poisoned) => {
+                *poisoned.into_inner() = FabricHandleState::Stopping;
+                Err(FabricError::new(
+                    "Fabric handle state lock is poisoned while stopping; the published session was cleared",
+                ))
+            }
+        }
+    }
+
+    fn finish_stop(&self) -> Result<(), FabricError> {
+        match self.handle_state.write() {
+            Ok(mut state) => {
+                *state = FabricHandleState::Stopped;
+                Ok(())
+            }
+            Err(poisoned) => {
+                *poisoned.into_inner() = FabricHandleState::Stopped;
+                Err(FabricError::new(
+                    "Fabric handle state lock is poisoned after stopping",
+                ))
+            }
+        }
+    }
+}
+
+impl Drop for FabricService {
+    fn drop(&mut self) {
+        match self.handle_state.write() {
+            Ok(mut state) => *state = FabricHandleState::Stopped,
+            Err(poisoned) => *poisoned.into_inner() = FabricHandleState::Stopped,
+        }
+    }
+}
+
+impl FabricHandle {
+    pub async fn query_one(
+        &self,
+        binding_key: &str,
+        deadline: Duration,
+    ) -> Result<Vec<u8>, FabricError> {
+        validate_query(binding_key, deadline)?;
+        let expires_at = query_deadline(deadline)?;
+        let session = self.running_session()?;
+
+        match query_with_session(&session, binding_key, expires_at).await {
+            Ok(payload) => Ok(payload),
+            Err(query_error) => match self.state.read() {
+                Ok(state) if matches!(*state, FabricHandleState::Running(_)) => Err(query_error),
+                Ok(_) => Err(FabricError::context(
+                    "FabricService stopped while the query was in flight",
+                    query_error,
+                )),
+                Err(_) => Err(FabricError::new(format!(
+                    "Fabric handle state lock is poisoned after a query failure: {query_error}"
+                ))),
+            },
+        }
+    }
+
+    fn running_session(&self) -> Result<Arc<Session>, FabricError> {
+        let state = self.state.read().map_err(|_| {
+            FabricError::new("Fabric handle state lock is poisoned while starting a query")
+        })?;
+        match &*state {
+            FabricHandleState::Running(session) => session.upgrade().ok_or_else(|| {
+                FabricError::new("FabricService session owner is no longer available")
+            }),
+            FabricHandleState::NotStarted => Err(FabricError::new(
+                "FabricService has not published its session yet",
+            )),
+            FabricHandleState::Stopping => Err(FabricError::new("FabricService is stopping")),
+            FabricHandleState::Stopped => Err(FabricError::new("FabricService is stopped")),
         }
     }
 }
@@ -176,14 +324,9 @@ pub async fn query_one(
     deadline: Duration,
 ) -> Result<Vec<u8>, FabricError> {
     validate_loopback_endpoint(connect_endpoint)?;
-    if binding_key.is_empty() {
-        return Err(FabricError::new("Fabric binding key must not be empty"));
-    }
-    if deadline.is_zero() {
-        return Err(FabricError::new("query deadline must be greater than zero"));
-    }
+    validate_query(binding_key, deadline)?;
 
-    let expires_at = Instant::now() + deadline;
+    let expires_at = query_deadline(deadline)?;
     let config = probe_config(connect_endpoint)?;
     let session = timeout_at(expires_at, zenoh::open(config))
         .await
@@ -216,13 +359,17 @@ async fn query_with_session(
         return Err(FabricError::new("query deadline elapsed before send"));
     }
 
-    let replies = session
-        .get(binding_key)
-        .target(QueryTarget::AllComplete)
-        .consolidation(ConsolidationMode::None)
-        .timeout(remaining)
-        .await
-        .map_err(|error| FabricError::context("could not send the Node status query", error))?;
+    let replies = timeout_at(
+        expires_at,
+        session
+            .get(binding_key)
+            .target(QueryTarget::AllComplete)
+            .consolidation(ConsolidationMode::None)
+            .timeout(remaining),
+    )
+    .await
+    .map_err(|_| FabricError::new("query timed out while sending to Fabric"))?
+    .map_err(|error| FabricError::context("could not send the Fabric query", error))?;
 
     let reply = timeout_at(expires_at, replies.recv_async())
         .await
@@ -304,9 +451,15 @@ fn reply_error_now(query: Query, message: &'static str) {
     let _ = query.reply_err(message).wait();
 }
 
-fn node_config(listen_endpoint: &str) -> Result<Config, FabricError> {
+fn node_config(
+    listen_endpoint: &str,
+    connect_endpoint: Option<&str>,
+) -> Result<Config, FabricError> {
     let mut config = base_config("peer")?;
     insert_endpoints(&mut config, "listen/endpoints", listen_endpoint)?;
+    if let Some(connect_endpoint) = connect_endpoint {
+        insert_endpoints(&mut config, "connect/endpoints", connect_endpoint)?;
+    }
     Ok(config)
 }
 
@@ -352,6 +505,22 @@ fn validate_loopback_endpoint(endpoint: &str) -> Result<(), FabricError> {
     ))
 }
 
+fn validate_query(binding_key: &str, deadline: Duration) -> Result<(), FabricError> {
+    if binding_key.is_empty() {
+        return Err(FabricError::new("Fabric binding key must not be empty"));
+    }
+    if deadline.is_zero() {
+        return Err(FabricError::new("query deadline must be greater than zero"));
+    }
+    Ok(())
+}
+
+fn query_deadline(deadline: Duration) -> Result<Instant, FabricError> {
+    Instant::now()
+        .checked_add(deadline)
+        .ok_or_else(|| FabricError::new("query deadline is too large"))
+}
+
 async fn close_session(session: &Session) {
     let _ = timeout(SERVICE_OPERATION_TIMEOUT, session.close()).await;
 }
@@ -380,3 +549,49 @@ impl Display for FabricError {
 }
 
 impl Error for FabricError {}
+
+#[cfg(test)]
+mod tests {
+    use std::net::TcpListener;
+    use std::time::Duration;
+
+    use paraegox_kernel::RuntimeHostId;
+    use paraegox_runtime::{RuntimeHost, RuntimeHostIdentity};
+
+    use super::FabricService;
+
+    #[test]
+    fn dropping_the_service_owner_revokes_its_handle() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("test endpoint");
+        let endpoint = format!(
+            "tcp/127.0.0.1:{}",
+            listener.local_addr().expect("test address").port()
+        );
+        drop(listener);
+
+        let service =
+            FabricService::new(&endpoint, "paraegox/v1/test/status", |_| Ok(b"{}".to_vec()))
+                .expect("valid Fabric service");
+        let handle = service.handle();
+        let identity = RuntimeHostIdentity::new(
+            RuntimeHostId::new("fabric-drop-test").expect("valid RuntimeHost id"),
+        );
+        let mut owner = RuntimeHost::new(identity, service);
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_time()
+            .build()
+            .expect("test runtime");
+
+        runtime.block_on(async {
+            owner.start().await.expect("Fabric owner should start");
+            drop(owner);
+
+            let error = handle
+                .query_one("paraegox/v1/test/status", Duration::from_millis(100))
+                .await
+                .expect_err("a handle must stop admitting work after its owner is dropped");
+            assert_eq!(error.to_string(), "FabricService is stopped");
+        });
+    }
+}
