@@ -17,7 +17,7 @@ cargo run --locked --bin paraegox -- node run \
   --deck builtin-agent
 ```
 
-再在另一个终端连接（当前是刻意保持简单的行式终端界面，输入 `/quit` 退出）：
+再在另一个终端连接：
 
 ```bash
 cargo run --locked --bin paraegox -- tui \
@@ -25,7 +25,9 @@ cargo run --locked --bin paraegox -- tui \
   --connect tcp/127.0.0.1:7447
 ```
 
-Node 状态会展示真实的 DeckRun、DeckLock digest 和 Agent CardInstance。TUI 只保存 SessionId 与输入输出；有序历史由 Node 内的 AgentService 保存，因此第二轮确定性回答会引用第一轮用户输入。当前回答器只是用于验证路径的 deterministic responder，不是真实模型。`node probe` 和双 Node peer probe 仍保留。
+交互终端会显示受 EAGOS 视觉风格启发的全屏聊天界面：宽屏为会话、聊天、状态三栏，较窄终端会自动折叠。Enter 发送，Esc 清空输入或取消当前轮，Ctrl-C 和 `/quit` 退出。stdin 或 stdout 不是终端时会自动保留稳定的行模式，便于脚本和系统测试。
+
+Node 状态会展示真实的 DeckRun、DeckLock digest 和 Agent CardInstance。TUI 只保存临时 SessionId 与有界的显示记录；有序历史由 Node 内的 AgentService 保存，因此第二轮确定性回答会引用第一轮用户输入。当前回答器只是用于验证路径的 deterministic responder，不是真实模型。界面不会伪造 streaming、thinking、tool、资源或健康状态。`node probe` 和双 Node peer probe 仍保留。
 
 M4 正在收敛唯一的真实模型候选。使用 DeepSeek V4 Flash 时，在同一个 Node 命令上增加 provider 选择：
 
@@ -58,7 +60,7 @@ cargo run --locked --bin paraegox -- node run \
   --deck builtin-agent
 ```
 
-Connect from another terminal (the current UI is intentionally line-oriented; enter `/quit` to exit):
+Connect from another terminal:
 
 ```bash
 cargo run --locked --bin paraegox -- tui \
@@ -66,7 +68,9 @@ cargo run --locked --bin paraegox -- tui \
   --connect tcp/127.0.0.1:7447
 ```
 
-Node status exposes the real DeckRun, DeckLock digest, and Agent CardInstance. The TUI owns only its SessionId and presentation; ordered history stays in AgentService on the Node, so the deterministic second reply references the first user input. This responder validates the path and is not a real model. `node probe` and the two-Node peer probe remain available.
+An interactive terminal opens a full-screen chat UI inspired by EAGOS's visual language: conversation, chat, and status columns on wide terminals, with responsive collapse on smaller terminals. Enter submits, Esc clears the input or cancels the active turn, and Ctrl-C or `/quit` exits. If either stdin or stdout is not a terminal, Paraegox preserves its stable line mode for scripts and system tests.
+
+Node status exposes the real DeckRun, DeckLock digest, and Agent CardInstance. The TUI owns only its ephemeral SessionId and a bounded display history; ordered history stays in AgentService on the Node, so the deterministic second reply references the first user input. This responder validates the path and is not a real model. The UI does not fabricate streaming, thinking, tool, resource, or health states. `node probe` and the two-Node peer probe remain available.
 
 M4 is narrowing real-model access to one candidate. To select DeepSeek V4 Flash, add the provider option to the same Node command:
 
