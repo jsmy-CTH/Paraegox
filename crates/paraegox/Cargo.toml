@@ -7,11 +7,12 @@ repository.workspace = true
 publish = false
 
 [dependencies]
+paraegox-agent = { path = "../paraegox-agent" }
 paraegox-kernel = { path = "../paraegox-kernel" }
 paraegox-node = { path = "../paraegox-node" }
 paraegox-runtime = { path = "../paraegox-runtime" }
 serde_json.workspace = true
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal"] }
+tokio = { workspace = true, features = ["io-std", "io-util", "macros", "rt-multi-thread", "signal"] }
 
 [lints]
 workspace = true
