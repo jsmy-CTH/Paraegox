@@ -1,16 +1,14 @@
-# 当前计划：TUI–Agent 基础收口
+# 当前计划：EAGOS 风格全屏聊天 TUI
 
 状态：Active
 日期：2026-08-15
 
-## 为什么现在只做这一件事
+## 为什么现在做这一件事
 
-当前最优先目标不是 Device、Card Link 或新的分布式能力，而是让开发者能清楚地启动一个 Node，并从独立终端与它承载的 Agent 完成最简单的多轮对话。
-
-main 已经存在一条真实的确定性路径：
+Paraegox 已经有一条经过两进程测试的真实对话路径：
 
 ```text
-独立 TUI
+独立终端客户端
   → typed AgentConversationClient
   → Fabric exact binding
   → Node / RuntimeHost
@@ -19,70 +17,62 @@ main 已经存在一条真实的确定性路径：
   → one Turn terminal
 ```
 
-这条路径已通过两进程两轮系统测试，但默认 responder 只是用于证明链路和历史的确定性实现。DeepSeek V4 Flash 代码候选也已存在，真实凭据的指定服务器 smoke 尚未完成。因此必须区分“本地对话链路已验证”和“真实模型对话已验收”。
+当前缺口是面向人的客户端仍只是行式输入输出。这个批次只把它收敛成可日常使用的全屏聊天界面；不改变 Node、Runtime、Fabric、Deck/Card 或 Agent 的 owner，也不借 UI 扩张控制平面。
 
-## 本批次 Outcome
+## Outcome
 
-- 保持现有 Node、RuntimeHost、FabricService、Deck/Card 和 AgentService 运行语义不变。
-- 把已经过大的单文件按真实 owner 拆成少量私有模块；公共 crate 路径保持不变。
-- 保留一个简单、可理解的行式 TUI：提示用户目标 Node、支持多轮输入、`/quit`、EOF 和 Ctrl-C。
-- 独立 Node 与独立 TUI 的现有系统场景明确使用 `/quit` 退出，并继续证明第二轮历史位于 AgentService。
-- 通过当前 focused 与 workspace 门禁；服务器网络恢复后，在指定 Ubuntu 服务器复跑同一 revision。
+- 交互终端默认进入 EAGOS 视觉语言的全屏聊天界面：深色背景、青色边框、角色分色、会话/聊天/状态三栏和底部输入。
+- 布局按终端尺寸退化：宽屏三栏、中屏两栏、窄屏单栏；极小终端给出明确提示且仍可退出。
+- 非交互 stdin 或 stdout 保留原有行模式及输出合同，继续服务脚本和真实两进程系统测试。
+- Enter 提交，Esc 清空空闲输入或取消当前 Turn，Ctrl-C 有界取消后退出，`/quit` 仍可退出。
+- 任意正常、错误或取消路径都恢复光标、raw mode 和 alternate screen。
 
-## 代码边界
+## 边界
 
-本批次不新增 crate。
+本批次不新增 crate，只在现有 `paraegox` binary 的 `tui` 模块中增加呈现与输入状态。
 
-- `paraegox-agent`
-  - `service`：Session、Turn、history、deadline/cancel、Agent Card profile 生命周期。
-  - `provider`：deterministic responder 与固定 DeepSeek adapter。
-  - `transport`：typed conversation client、Fabric binding 与 wire bounds。
-  - crate root 只保留稳定合同和 re-export。
-- `paraegox-runtime`
-  - 分开 status、Deck/Card runtime ownership 和 RuntimeHost 生命周期编排。
-- `paraegox-fabric`
-  - 分开服务端 lifecycle/admission 与独立客户端。
-- `paraegox` binary
-  - TUI 循环从命令解析和 Node composition 中分离。
-
-`paraegox-deck`、`paraegox-node` 和 `paraegox-kernel` 当前仍足够小且职责凝聚，保持单文件。模块只因现有职责边界而存在，不为未来功能预留空壳。
+- TUI 仍只持有 `AgentConversationClient`，生产路径必须经过 Fabric；禁止直调 AgentService。
+- Session history 仍由 Node 内 AgentService 独占，TUI 只保存当前进程的临时 SessionId 和有界显示记录。
+- UI 只展示当前能证明的事实：配置的目标 Node/endpoint、Fabric client 是否打开、本地 Session、Turn 状态和终端结果。
+- Provider 仍只返回 authoritative final，因此界面只能显示 `waiting for final`，不能伪造 token streaming、thinking 或 tool activity。
+- Ratatui/Crossterm 只负责终端呈现和事件；不建立 UI framework 或新的 service。
 
 ## In scope
 
-- 机械整理现有代码，不改变公共 API、wire、Session/Turn 语义或启动停止顺序。
-- 保留 deterministic responder 作为无凭据、本地可重复的默认路径。
-- 保留固定 DeepSeek V4 Flash 候选以及已有的 secret、body、output、deadline 和 terminal 边界。
-- 只调整现有高价值测试；不因拆文件复制测试或建立 fixture/mock 框架。
-- README 清楚说明当前 TUI 是行式界面，确定性路径和真实模型路径处于不同验证状态。
+- 三档响应式布局和 EAGOS 风格配色。
+- Unicode 文本输入、退格、提交、取消、退出和 resize。
+- 有界输入与消息记录；禁止并发提交第二个 Turn。
+- terminal lifecycle 的 RAII 恢复。
+- 一个 render 测试覆盖宽、中、窄和极小终端。
+- 保留现有独立 Node + 非 TTY TUI 两轮对话系统测试，不复制 fixture 或铺设低价值测试。
+- README 中英文同步当前交互方式和能力边界。
 
 ## Non-goals
 
-- Device crate、DeviceService、模拟硬件、Observation/Command、Card Link 或工具调用。
-- 全屏 TUI、streaming token、Markdown renderer、会话持久化或重连恢复。
-- Provider registry、动态模型选择、自动 retry/fallback 或多 Provider 平台。
-- 新的 Runtime/Fabric/Agent contracts crate、service locator、通用消息总线或 graph engine。
-- 跨宿主安全、Deployment、NodeDaemon、安装升级或硬件接入。
+- EAGOS 的 Console Bridge、TUI 直连 Zenoh、临时内嵌服务器或 transport fallback。
+- Session 列表/切换/持久化、历史同步或重连恢复。
+- token streaming、Markdown、thinking、tool/approval、Trace、拓扑、日志、资源监控或命令面板。
+- Device、Card Link、Memory、Deployment、NodeDaemon 或跨宿主安全。
+- 新 UI crate、widget framework、theme system 或插件系统。
 
 ## 验收
 
-- 不新增 crate、依赖或设备概念；生产模块均有当前真实 consumer。
+- 不新增 crate；新增依赖仅限 Ratatui、Crossterm 及其异步事件适配。
 - `cargo fmt --all -- --check` 通过。
 - `cargo check --workspace --all-targets --locked` 通过。
 - `cargo clippy --workspace --all-targets --locked -- -D warnings` 通过。
 - `cargo test --workspace --all-targets --locked` 通过。
-- 独立 Node + 独立 TUI 的两轮确定性场景通过，第二轮精确引用第一轮输入，并由 `/quit` 有界退出。
-- 代码审查未发现 TUI 绕过 Fabric 直调 AgentService，也未让 RuntimeHost 退化为 service locator。
+- 真实独立 Node + 非 TTY TUI 两轮场景仍精确证明服务端历史和 `/quit` 有界退出。
+- TestBackend 覆盖三档布局与极小尺寸，CHAT/INPUT 不因折叠丢失。
+- PTY smoke 验证中文输入、提交、Ctrl-C、`/quit` 和 terminal restore；响应布局由 TestBackend 覆盖。
+- 审查确认 TUI 没有绕过 Fabric、没有显示无法证明的状态、没有引入 detached task。
 - 分支合入 main 并通过 Ubuntu CI 后，才能声称本批次代码完成。
 
 ## 外部待办
 
-以下证据不会阻塞本地代码整理，但必须诚实保留：
-
 - 指定 Ubuntu 服务器对合入 revision 的 clean-checkout deterministic smoke。
-- 仅在服务器已有安全环境变量时，使用真实 `DEEPSEEK_API_KEY` 完成同一 Node/TUI 两轮非敏感对话；不在命令、日志、仓库或 artifact 中记录密钥。
-
-在真实凭据 smoke 完成前，DeepSeek 路径仍只能称为实现候选，不能称为已完成的真实 Agent 对话。
+- 仅在服务器已有安全环境变量时完成 DeepSeek V4 Flash 两轮非敏感对话；真实凭据 smoke 完成前，外部 Provider 仍是实现候选。
 
 ## Stop condition
 
-完成上述模块整理、最简单两轮 TUI 场景、workspace 门禁、审查和 Ubuntu CI 后立即停止。不要自动进入 Device、Card Link、全屏 UI、streaming、Memory 或下一里程碑。
+全屏聊天 TUI、现有两轮路径、workspace 门禁、PTY smoke、审查和 Ubuntu CI 完成后立即停止，不自动进入 streaming、Session 管理、Device、Card Link 或下一里程碑。
