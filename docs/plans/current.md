@@ -1,6 +1,6 @@
 # 当前计划：M3 Deck Agent 确定性终端对话
 
-状态：Implemented candidate（Mac 已验证，等待 Ubuntu CI/main）
+状态：Integration candidate（Mac 与 Ubuntu CI 已验证；指定服务器 smoke 待补）
 日期：2026-08-15
 
 ## 授权边界
