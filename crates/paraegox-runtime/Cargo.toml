@@ -1,5 +1,5 @@
 [package]
-name = "paraegox"
+name = "paraegox-runtime"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,11 +7,13 @@ repository.workspace = true
 publish = false
 
 [dependencies]
+async-trait.workspace = true
 paraegox-kernel = { path = "../paraegox-kernel" }
-paraegox-node = { path = "../paraegox-node" }
-paraegox-runtime = { path = "../paraegox-runtime" }
-serde_json.workspace = true
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal"] }
+serde.workspace = true
+tokio = { workspace = true, features = ["time"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }
 
 [lints]
 workspace = true

@@ -1,73 +1,84 @@
-# 当前计划：M1 本地 Agent 对话
+# 当前计划：M1 可寻址 Node 与 RuntimeHost 基线
 
-状态：Proposed
+状态：Active
 日期：2026-08-14
 
 ## 授权边界
 
-本文是一份待确认的交付计划，不自行授权 M1 实现。只有用户明确要求开始 M1 后，状态才能变为 Active。
+用户已明确要求“开始 plan，然后开发”。本计划授权的只是一个可寻址 Node、其 RuntimeHost、FabricService 和外部 probe 构成的第一条可执行切片。
+
+用户随后已授权继续完成首个分布式具身 Agent 闭环，但后续仍按 `双 Node → Deck/Card + Agent/TUI → 真实模型 → 模拟设备 → 分布式 Deck → 真实设备` 的依赖顺序逐步交付。本文继续只拥有当前 M1；后续 crate、协议和服务不得在各自真实 producer、consumer 与验收场景进入范围前提前创建。长期顺序与边界由 `architecture/system-model.md` 记录。
 
 ## Outcome
 
-在指定 Ubuntu 服务器的 clean checkout 中，通过一个明确命令启动最小 TUI，并与拥有真实 Session history 的 Agent 完成两轮对话。
+在一个进程中启动具有 identity 和 incarnation 的 Paraegox Node，由其 RuntimeHost 启动并承载 FabricService；第二个外部进程经真实 Fabric 在有限时间内 probe 该 Node，读取 Node、RuntimeHost 和 FabricService 的 identity 与 readiness。
 
-M1 的价值是建立分布式具身 Agent OS 的用户入口和 AgentSession owner。它不是把 Paraegox 降级为聊天产品；M2 会在同一入口加入模拟 Observation、受约束 Tool 和 Device Operation。
+该结果建立跨进程、可寻址的分布式 Node/Runtime 基线。它不声称已完成双 Node、跨宿主通信、Agent 对话或具身执行。
 
 ## 当前基线
 
-- 仓库当前只有一个最小 Rust CLI 和工程 smoke tests。
-- AgentSession、Model Provider、TUI、stream/final 和真实模型调用尚未实现。
-- main 是唯一集成权威；开发、编译和验证在指定 Ubuntu compute container 执行。
+- 本计划启动时，仓库只有单一最小 Rust CLI 和 CLI smoke test。
+- Node、RuntimeHost、CoreService lifecycle、FabricService 与外部 probe 尚未实现。
+- main 是唯一集成权威。用户已临时允许在 Mac 编译；服务器稳定后，同一 revision 还需在 Ubuntu clean checkout 验证。
 
 ## In scope
 
-- 一个无需 daemon、Inspection 或数据库即可启动的最小终端对话入口。
-- TUI 每轮只提交 Session identifier 与本轮 user text；TUI transcript 只是显示投影。
-- AgentSession owner 负责追加有序 history，并为 Model Provider 构造 messages。
-- 一个窄 Model Provider seam。
-- deterministic provider，用于无凭据的稳定两轮测试。
-- 一个 opt-in 的真实模型两轮 smoke，凭据只来自服务器环境。
-- 每轮唯一 Authoritative Final；只有不引入额外框架时才加入增量 token。
-- 启动失败、模型失败和请求超时的有界行为，以及 Ctrl-C 干净退出。
+- 保留 Cargo workspace，建立当前路径真实使用的最小 crate 边界：
+  - `paraegox`：CLI 与静态组合。
+  - `paraegox-kernel`：当前路径使用的 Node identity、incarnation/epoch 等无 I/O 基础机制。
+  - `paraegox-node`：Node identity 与窄 probe 语义。
+  - `paraegox-runtime`：RuntimeHost 和最小 CoreService lifecycle。
+  - `paraegox-fabric`：FabricService、生产 Fabric session 与当前固定 binding。
+- `paraegox node run --node-id <id>` 启动 Node，并执行 `created → starting → ready → stopping → stopped`；RuntimeHost 对 CoreService lifecycle 施加宿主级 deadline，FabricService 在 stop 返回前 join 自己的请求任务。
+- Node 拥有稳定 NodeId 与每次启动都变化的 incarnation；RuntimeHost 拥有运行 identity 与 epoch。
+- FabricService 作为当前真实 CoreService，完成启动、readiness 和关闭。
+- 当前 Fabric adapter 固定使用 Zenoh 1.9 的 peer/client loopback TCP query/reply；关闭 multicast scouting，不要求 zenohd，也不把 vendor 选择提升为永久架构合同。认证远程链路不在本切片内，因此拒绝非 loopback endpoint。
+- `paraegox node probe --target <id>` 从第二个进程经 Fabric 发送固定、只读请求，并输出 Node/Runtime/Fabric 状态。
+- probe 有明确 deadline 和唯一 terminal response；目标不存在、Runtime 未 Ready 或超时时明确失败。
+- Ctrl-C 后停止接受新请求，并完成 RuntimeHost、Fabric session 和后台任务的有界关闭与 join。
 
-优先在现有 crate 内完成。只有用户明确批准且当前语言、进程、生命周期或安全边界确实需要时才增加 crate。
+上述 crate 必须在同一切片中进入真实可执行路径，不先合入空架子。
 
 ## Non-goals
 
-- Tool、Device、Observation 和物理操作；这些属于 M2。
-- 跨进程 Bus、Zenoh、远程 Node 或能力发现；这些属于 M3。
-- 长期记忆、外部数据库、模型路由、预算、反思和多 Agent。
-- Deployment、Artifact、Inspection、Ops、Evidence、Web Console 或打包发布。
-- 语音、多模态、硬件驱动、ROS 或设备厂商 SDK。
-- 为未来阶段预建协议、trait、目录、fixture 或兼容层。
+- AgentService、AgentSession、Model Provider、TUI 和真实模型对话。
+- DeviceService、Observation、Command、Driver 和物理操作。
+- 第二个 Node、跨宿主验证、自动 discovery 和多 transport。
+- 通用 Bus、动态 service registry、service graph、插件和 SDK。
+- NodeDaemon、Deployment、Artifact、Inspection、Ops、Evidence 和 Web Console。
+- Journal、数据库、恢复、迁移、长期 presence 或持久化节点状态。
+- 为未来版本预建 protocol family、compatibility layer、fixture 仓库或通用测试 DSL。
 
-## 建议交付切片
+## 交付切片
 
-1. 在现有 CLI 内建立最小终端 UI、in-memory AgentSession、deterministic Provider 与 final-only 两轮场景。
-2. 在相同 Provider seam 上加入一个真实模型 adapter 与服务器 opt-in smoke。
-3. 只有 Provider 已原生提供增量结果且不需要通用 streaming/cancellation 框架时，才加入 token streaming。
+1. 建立五个获授权 crate 的最小单向依赖，只实现当前 producer 和 consumer 需要的 identity、lifecycle 和 Fabric binding。
+2. 贯通 `node run` 与 `node probe` 的真实双进程路径，没有 direct-call 或伪成功 fallback。
+3. 验证成功、目标不存在、超时、重启 identity 变化和 Ctrl-C 关闭。
 
-每个切片必须保持同一产品路径可运行，不能先合入只有 interface、mock 或无 consumer 的基础设施。
+每个中间 commit 都必须保持 workspace 可构建；不将无当前消费者的 interface、mock 或空 service 当作功能进度。
 
-## 用户可观察验收
+## 验收
 
-- 用户运行一个公开命令即可进入 TUI。
-- 第一轮要求 Agent 记住一个确定值，第二轮询问该值时得到正确答案。
-- TUI 每轮只提交 Session identifier 和本轮 user text；它不能把 transcript 作为模型上下文权威。
-- instrumented deterministic Provider 能观察到由 AgentSession owner 形成的完整有序 messages，而不是由 TUI 或 fixture 注入历史。
-- deterministic 场景在无网络、无模型凭据时稳定证明 history、顺序、唯一 Final 和错误行为。
-- 有凭据时，真实 Provider smoke 证明两轮请求传递、非空 Final、错误凭据失败和资源清理；不以模型的精确措辞证明 Session 正确性。
-- 缺少或错误凭据时返回明确错误，不阻塞 TUI，也不回退为伪成功。
-- 每轮只有一个 Final；若实现 token，则 token 只用于显示。模型或客户端退出后没有遗留 owner process。
+- 进程 A 以明确 NodeId 启动并进入 Ready；进程 B 经生产 Fabric probe 它。
+- probe 返回与运行实例一致的 NodeId、Node incarnation、RuntimeHost identity/epoch 和 Runtime/Fabric readiness。
+- Node 不存在或停止后，probe 在 deadline 内明确失败，不回退到本地直调。
+- 停止再启动同一 NodeId 后，Node incarnation 与 Runtime epoch 均变化。
+- Ctrl-C 后 Node 进程有界退出，Fabric session 和 Runtime 任务没有遗留。
+- 同一 revision 通过 `fmt`、`check`、`clippy`、workspace tests 与一条真实双进程系统场景。
+- Mac 结果是服务器未稳定期间的临时证据；服务器恢复后，还需一次 Ubuntu clean-checkout smoke 才能对外声称完成。
 
-GitHub CI 只运行 deterministic 场景。真实模型 smoke 在指定服务器显式运行，不把凭据带入 CI。
+## 测试约束
 
-## 开始前需要决定
+单元测试只覆盖风险较高、通过系统场景难以定位的不变量，例如非法 lifecycle 转换、旧 epoch 误用、deadline 和重复 terminal。不为 getter、简单构造、格式化或无分支包装器建立测试，不追求测试数量或表面覆盖率。
 
-- 最小 TUI 的实现方式。
-- 首个真实 Model Provider；选择条件是当前可用、凭据可由环境注入，并且供应商消息格式不会成为内部核心合同。
-- M1 是否需要第一条 Rust 与其他语言的真实进程边界；没有当前 consumer 时保持单语言、单进程。
+当前保留的验证层级为：
+
+- 少量 owner 附近的单元测试。
+- 一条真实 Fabric 双进程 integration test。
+- 一次服务器手工 smoke。
 
 ## Stop condition
 
-上述两轮 deterministic 与真实模型场景在同一 main revision 上通过后，M1 完成并停止。不得自动开始 M2、拆分 crate、接入 Fabric、增加设备或扩展控制面；后续需要用户重新授权。
+用户可以从两个独立进程完成 `node run` / `node probe`，成功与失败分支有界，重启 identity 变化，RuntimeHost 和 FabricService 可干净关闭，且同一 revision 完成当前可用环境的验证后，本里程碑停止。
+
+不自动开始 AgentService、TUI、第二个 Node、DeviceService、Deployment 或持久化；后续切片需要用户重新授权。
