@@ -1,112 +1,98 @@
-# 当前计划：M3 Deck Agent 确定性终端对话
+# 当前计划：M4 固定 DeepSeek V4 Flash Provider
 
-状态：Integration candidate（Mac 与 Ubuntu CI 已验证；指定服务器 smoke 待补）
+状态：Active
 日期：2026-08-15
 
 ## 授权边界
 
-用户已授权按完整路线继续开发，并明确 Deck/Card 是 Paraegox 的核心模型、AgentService 属于 CoreService，同时要求初期只保留少量高价值测试。本文只拥有下一条可执行切片：把最小 Deck/Card、真实 DeckRun/CardInstance、AgentService 与独立终端聊天客户端放进同一条生产路径。
+M3 Deck Agent 确定性终端对话已经合入 main 并通过 Ubuntu CI：RuntimeHost 创建真实 DeckRun/CardInstance，Agent Card 激活 AgentService profile，独立 TUI 通过 Fabric 完成有服务端历史的两轮对话。指定服务器对该 main revision 的 clean-checkout smoke 仍待网络恢复后补充；这项待办不能被 Mac 或 GitHub Actions 证据代替。
 
-M2b 的 mTLS 方案已经收束，但真实跨宿主完成依赖服务器网络与外部证书部署；它不阻塞本地 Deck/Agent 路径，也不得被本计划暗中降级为明文远程连接。
+本文只拥有 M4 的下一条有界切片：在保留 deterministic 默认路径的同时，为同一个 AgentService 接入一个固定的 DeepSeek V4 Flash Provider，并用真实凭据完成最小两轮对话。本文不授权模型平台、Provider 生态或工具 Agent 扩展。
 
 ## Outcome
 
-一个 Node 启动 RuntimeHost、FabricService、AgentService 和内置 Agent Deck。RuntimeHost 创建真实 DeckRun 与 Agent CardInstance；该 Card 激活 Agent profile 后，另一个终端进程经 typed Fabric client 连续提交两轮输入，第二轮确定性回答必须引用服务端保存的第一轮历史。
+不指定 Provider 时，M3 行为不变：
 
 ```text
-paraegox node run --node-id node-a --deck builtin-agent
-    Node
-      └── RuntimeHost
-          ├── FabricService
-          ├── AgentService
-          └── DeckRun
-              └── Agent CardInstance
-
-paraegox tui --target node-a
-    → typed AgentConversationClient
-    → Fabric exact binding
-    → AgentService session/history
-    → one authoritative final per turn
+node run --deck builtin-agent
+    → deterministic responder
 ```
 
-该结果证明 Deck/Card 已进入真实 Agent 用户路径，并解决最小终端多轮对话；它不声称已经接入真实模型、全屏 TUI、工具循环、设备或跨宿主安全链路。
+显式选择 Provider 时，同一 Deck/Card/Session/Turn 路径调用唯一外部模型：
 
-## 当前基线
+```text
+node run --deck builtin-agent --provider deepseek-v4-flash
+    → AgentService committed history
+    → fixed DeepSeek Chat Completions adapter
+    → one complete provider response
+    → one Authoritative Final
+```
 
-- M1 与 M2a 已经通过 Ubuntu CI 合入 main；当前 main 能运行同机 loopback 双 Node，并由 Node B 使用自己的长期 Fabric session 查询 Node A。
-- 当前分支已经把 RuntimeHost 收敛为非泛型的有界 CoreService owner，并让 FabricService 承载构造期固定的 runtime-status 与 Agent bindings。
-- 当前分支已经实现最小 Deck compiler、真实 DeckRun/CardInstance、AgentService、ephemeral Session/Turn 与独立行式终端客户端；回答器仍是确定性实现，不是真实模型。
-- 指定服务器 clean-checkout smoke 仍待网络恢复；用户已临时允许在 Mac 编译验证。
+TUI 命令和 Fabric wire 不感知 API key、HTTP endpoint 或模型响应格式。外部 Provider 成功后，第二轮请求必须由 AgentService 发送第一轮已提交的 user/assistant 历史；取消、deadline、HTTP 错误或非完整模型响应仍只产生一个 terminal，且不提交 partial。
+
+## 当前基线与外部合同
+
+- main 已包含 M1、M2a、M3，并通过 M3 对应的 Ubuntu CI；M3 指定服务器 smoke 仍 pending。
+- 当前 AgentService 已拥有有界 ephemeral Session、ordered committed history、服务级单 active Turn、cancel/deadline 和幂等 terminal；这些语义不能转移给 Provider。
+- 当前 deterministic responder 是已验证默认实现，必须保留，避免没有外部凭据时破坏本地开发与系统测试。
+- DeepSeek 当前 OpenAI-compatible endpoint 是 `https://api.deepseek.com/chat/completions`，本切片只使用 `deepseek-v4-flash`，并显式关闭 thinking、关闭 stream。旧的 `deepseek-chat` / `deepseek-reasoner` 名称不进入实现。
+- DeepSeek Chat Completions 是无状态调用；多轮 `messages` 由 Paraegox 重建。参考 [DeepSeek Chat Completions API](https://api-docs.deepseek.com/api/create-chat-completion) 与 [DeepSeek Multi-round Conversation](https://api-docs.deepseek.com/guides/multi_round_chat)。
+- DeepSeek 文档没有本切片可依赖的远端 cancel 合同。关闭本地 HTTP future 只能停止 Paraegox 等待；不能宣称远端推理或计费已经停止。参考 [DeepSeek Rate Limit & Isolation](https://api-docs.deepseek.com/quick_start/rate_limit)。
 
 ## In scope
 
-- 新增唯一 `paraegox-deck` crate，保存纯 workload 语义与最小编译：
-  - `CardDefinitionRef → Card → ResolvedCard`
-  - `DeckSpec → DeckLock`
-  - exact built-in definition、重复 key/未知 definition 拒绝、确定性 lock identity
-  - 不依赖 Tokio、Runtime、Fabric 或 Agent
-- 新增唯一 `paraegox-agent` crate，作为真实领域与生命周期边界，容纳：
-  - AgentService CoreService 与不延长 owner 生命周期的 typed handle
-  - ephemeral Session、ordered history、Turn identity 与唯一 terminal
-  - built-in deterministic Agent Card implementation
-  - typed AgentConversationClient 与当前 JSON codec
-  - M3 内部 deterministic responder；真实 Provider seam 到 M4 有真实 adapter 时再公开
-- RuntimeHost 改为非泛型 owner：
-  - 构造时接收数量有上限、不可动态查找的 CoreService 序列
-  - 按显式顺序启动、逆序停止，不提供 name/TypeId/Any lookup 或 service accessor
-  - CoreService 全部启动后启动至多一个 DeckRun；停止时先停 CardInstance/DeckRun
-  - 任一步失败都逆序清理已经启动的 owner，并聚合 cleanup failure
-- Runtime 真实拥有 `DeckRunId`、`CardInstanceId`、generation、状态与 snapshot；Node status 展示当前 DeckLock identity、DeckRun 和 CardInstance。
-- AgentService 只有一个当前 Agent profile、一个有界请求入口和有界内存：
-  - 没有 live Agent Card 时拒绝对话
-  - 成功才原子提交 user/final；取消、超时、失败不提交 partial
-  - 同一 Session 一次最多一个 active Turn；重复 TurnId 内容一致时返回已有结果，冲突内容拒绝
-  - stop 撤销 admission、取消 active Turn 并等待已有请求结束
-- FabricService 只因第二个真实 consumer 增加最窄能力：
-  - 多个构造期固定 exact query binding，payload 与并发有界
-  - opaque async handler，不理解 Agent、Session 或 Deck
-  - 长期 `FabricClient` 提交 bounded request；不暴露 raw Zenoh
-  - Runtime status 与 Agent conversation 都不得 direct-call fallback
-- `paraegox node run` 增加 `--deck builtin-agent`；未指定 Deck 时保留 M2 Node 行为。
-- `paraegox tui --target <node> --connect <endpoint>` 是独立、行式最小终端 TUI：只持 SessionId、输入与显示，不持 history、profile、provider 或 raw Fabric。
+- 在现有 `paraegox-agent` owner 内加入第一个有真实 consumer 的最窄 Provider seam 和 DeepSeek adapter；不新增 Provider crate。
+- 生产配置固定为：
+  - endpoint `https://api.deepseek.com/chat/completions`
+  - model `deepseek-v4-flash`
+  - non-streaming
+  - thinking disabled
+  - 本地有界 output、response body 与总 deadline
+- 请求只包含 built-in Agent system profile、已成功提交的有序 user/assistant history 和当前 user input；Cancelled、TimedOut、Failed turn 不进入上下文。
+- 只从 Node 进程环境读取 `DEEPSEEK_API_KEY`，以 Bearer header 发送；缺失或无效时明确失败，但不输出密钥、Authorization header 或完整敏感 body。
+- 把 HTTP/Provider 结果收敛到现有 terminal：
+  - 只有 `finish_reason=stop`、非空且有界的完整 content 可以成为 Authoritative Final
+  - `length`、`content_filter`、`tool_calls`、`insufficient_system_resource`、非法 schema 和超限 body 都作为失败，不提交 partial
+  - `400/422`、`401`、`402`、`429`、`500/503` 与 transport/decode/timeout 分型到少量 provider-neutral failure
+- `node run` 只增加精确枚举值 `--provider deepseek-v4-flash`；省略该参数仍选择 deterministic responder。
+- timeout/cancel 后立即封存现有唯一 terminal；晚到 Provider 结果必须被丢弃，不能产生第二个 terminal 或写入成功历史。
 
 ## Non-goals
 
-- 真实 Model Provider、API key、模型 registry/router/fallback、本地模型或 token streaming。
-- ratatui/full-screen layout、会话列表、Inspection、HUD、后台 watch 或 Web Console。
-- Tool loop、SubAgent、Memory/Belief、Reflection、Task、Budget 或长期 session persistence。
-- Deck 文件 loader、Catalog、Artifact、semver solver、签名、Deployment、placement、reconciliation 或多 Deck。
-- Card Port/Link、Graph、fan-in/out、动态 plugin ABI 或多语言 worker。
-- DeviceService、Observation、Command、Driver 或物理操作。
-- TLS/mTLS 实现、非 loopback endpoint 或跨宿主完成声明。
+- Provider registry、动态 discovery、router、模型自动选择、fallback 或多 Provider 配置。
+- 自动 retry、backoff、hedging、请求 replay 或跨 Provider failover。
+- streaming token、SSE、reasoning display、tool calls、JSON mode、Responses API 或 Anthropic API。
+- 自定义生产 base URL、代理配置、客户端传 endpoint、客户端传 model 或任意 OpenAI-compatible 服务。
+- API key 文件、Deck secret、CLI key 参数、Fabric secret、Secret manager 框架或密钥轮换系统。
+- 持久 Session/Memory、Model cache、prompt template 系统、token budget scheduler、usage billing service 或 observability 平台。
+- Card Link、DeviceService、跨宿主认证加密、部署和硬件能力。
 
 ## 实现顺序
 
-1. 实现纯 Deck compiler 与确定性 DeckLock，并由 built-in Agent definition 成为真实 consumer。
-2. 将 RuntimeHost 收敛为固定 CoreService 序列 + 单 DeckRun owner，补启动失败逆序回滚。
-3. 将 Fabric 的单 binding 收敛为固定、有界 opaque bindings，并增加长期 typed client 所需的 payload request。
-4. 实现 AgentService、Agent Card 激活/撤销、Session/Turn terminal 与 deterministic responder。
-5. 在 Node composition 中显式取得 typed handles 后移交 owner，贯通 `node run --deck` 与独立 `tui`。
-6. 更新 README 当前能力，跑完整 gates、PR、Ubuntu CI；服务器恢复后补同一 main revision smoke。
-
-中间提交必须保持当前 M2 路径可构建。Deck substrate、Agent 空壳或 Runtime 通用框架都不能脱离最终两轮用户路径单独合入 main。
+1. 在 `paraegox-agent` 内定义由 deterministic responder 与一个 DeepSeek adapter 实际消费的窄调用合同；不公开 registry 或 service locator。
+2. 实现固定 request/response codec、Bearer header、body/output 上限和 provider-neutral error mapping；生产 URL 与 model 不接受外部覆盖。
+3. 将 AgentService 已提交历史映射成 `system/user/assistant` messages；只有完整成功 content 进入现有原子 commit。
+4. 把 Turn cancellation 和绝对 deadline 传播到 HTTP future；证明 late response 不能改变 terminal 或 history。
+5. 在 Node composition 中加入精确 `--provider deepseek-v4-flash` 选择；无参数时保留 deterministic 路径，TUI 与 Fabric wire 不变。
+6. 通过本地无密钥的 fake-server 合同测试和现有 workspace gates；服务器可用后，以进程环境中的真实凭据完成显式、非敏感的 Node/TUI 两轮 smoke。
 
 ## 验收
 
-- RuntimeHost 创建真实 DeckRun/CardInstance；Node status 中的 identity、generation 与 DeckLock 对应，不由 CLI 伪造。
-- AgentService 的 wire handler 在没有 live Agent Card 时明确拒绝对话；不含 Agent workload 的 Node 可以完全不安装 AgentService 或 Agent binding。
-- 独立终端进程使用同一 Session 连续输入两轮；第二轮 final 精确引用第一轮用户输入，证明 history 在 AgentService。
-- 每轮恰好一个 terminal；deadline 与 cancel 都有 wall-clock bound，provider 晚到结果不能生成第二个 terminal。
-- Card stop 后 profile 失效；Node shutdown 顺序为 Card/DeckRun → AgentService/Fabric 的明确逆序，所有 owned task 被 join。
-- M1 external probe 与 M2 双 Node/长期 session 场景无回归。
-- 同一 revision 通过 fmt、check、Clippy `-D warnings`、workspace tests 和真实 Node/TUI 双进程场景。
+- 不指定 `--provider` 时，现有 deterministic 两轮系统路径、M1 probe 与 M2 双 Node 场景无回归。
+- 指定 `--provider deepseek-v4-flash` 但进程环境没有 `DEEPSEEK_API_KEY` 时，Node fail-fast，输出中不包含凭据或 Authorization header。
+- fake-server 证据覆盖请求历史顺序、Bearer header 存在但不泄露、完整成功 response、Provider error，以及 timeout/cancel 后 late response 不提交。
+- 外部模式仍由 AgentService 独占 Session/history/terminal；TUI、Fabric、DeckLock 与 Card snapshot 不出现 DeepSeek credential 或 HTTP DTO。
+- 同一 revision 通过 fmt、check、Clippy `-D warnings`、workspace tests 和 deterministic Node/TUI 系统场景。
+- 指定 Ubuntu 服务器使用真实 `DEEPSEEK_API_KEY` 启动 Node，独立 TUI 完成两轮非敏感对话，第二轮请求消费第一轮已提交历史；该 credentialed smoke 的 revision 与结果被明确记录。
+
+在最后一项真实服务器证据完成前，M4 保持 Active，README 和系统模型只能称其为候选或待验证路径。
 
 ## 测试约束
 
-只保留四组高价值证据：Deck compiler 的确定性与 fail-fast；Runtime 多 owner 的启动/逆序回滚；Agent turn 的唯一 terminal/cancel/timeout；一条真实 Node + 独立 TUI 两轮系统场景。优先在同一测试中覆盖相关失败分支，不为 DTO、getter、显示格式或无分支 wrapper 堆单测，不创建 mock framework、fixture 目录或测试 DSL。
+只增加一组高价值 Provider 合同测试，合并覆盖成功、错误、deadline/cancel 与 late response；不为每个 HTTP 字段建立单测，不新增 mock framework 或 fixture 目录。真实 credentialed smoke 不进入默认 CI，也不在日志、命令行或测试 artifact 中保存 key、完整 prompt 或完整 response。
 
 ## Stop condition
 
-真实 DeckRun/Agent Card 成为 AgentService 的 admission 前提，独立终端客户端完成确定性两轮有上下文对话，取消/超时/关闭有界，M2 无回归，并通过当前可用环境与 Ubuntu CI 后，本里程碑停止。
+固定 DeepSeek V4 Flash 的非流式调用通过现有 AgentService 完成真实两轮对话，唯一 terminal 与成功历史语义保持不变，deterministic 默认路径无回归，Ubuntu CI 与指定服务器 credentialed smoke 均有证据后，M4 停止。
 
-不自动加入真实模型、全屏 TUI、Port/Link、DeviceService、Deployment 或持久化；它们分别由后续里程碑拥有。
+不自动进入 Provider registry、retry/fallback、stream、tools、DeviceService 或其他后续里程碑。

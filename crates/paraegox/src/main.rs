@@ -4,7 +4,9 @@ use std::process::ExitCode;
 use std::str::FromStr;
 use std::time::Duration;
 
-use paraegox_agent::{AgentConversationClient, SessionId, TurnId, TurnTerminal};
+use paraegox_agent::{
+    AgentConversationClient, DeepSeekV4FlashConfig, SessionId, TurnId, TurnTerminal,
+};
 use paraegox_kernel::{NodeId, RuntimeHostId};
 use paraegox_node::{Node, NodeIdentity, probe_node};
 use paraegox_runtime::RuntimeHostIdentity;
@@ -12,13 +14,14 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 
 const DEFAULT_ENDPOINT: &str = "tcp/127.0.0.1:7447";
 const DEFAULT_PROBE_TIMEOUT_MS: u64 = 2_000;
+const DEFAULT_TUI_TIMEOUT_MS: u64 = 30_000;
 
 const HELP: &str = "Paraegox — distributed embodied-intelligence Agent OS
 
 Usage:
   paraegox --help
   paraegox --version
-  paraegox node run --node-id <id> [--deck builtin-agent] [--listen <loopback-tcp-endpoint>] [--connect <loopback-tcp-endpoint> --probe-peer <id> [--timeout-ms <ms>]]
+  paraegox node run --node-id <id> [--deck builtin-agent] [--provider deterministic|deepseek-v4-flash] [--listen <loopback-tcp-endpoint>] [--connect <loopback-tcp-endpoint> --probe-peer <id> [--timeout-ms <ms>]]
   paraegox node probe --target <id> [--connect <loopback-tcp-endpoint>] [--timeout-ms <ms>]
   paraegox tui --target <id> [--connect <loopback-tcp-endpoint>] [--timeout-ms <ms>]
 
@@ -27,7 +30,9 @@ Current capability:
 
 Defaults:
   --listen / --connect  tcp/127.0.0.1:7447
-  --timeout-ms          2000";
+  node probe timeout    2000 ms
+  TUI turn timeout      30000 ms
+  --provider            deterministic (with --deck builtin-agent)";
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -47,6 +52,7 @@ async fn main() -> ExitCode {
             peer,
             timeout,
             deck,
+            provider,
         }) => finish(
             run_node(
                 node_id,
@@ -55,6 +61,7 @@ async fn main() -> ExitCode {
                 peer,
                 timeout,
                 deck,
+                provider,
             )
             .await,
         ),
@@ -92,18 +99,36 @@ async fn run_node(
     peer: Option<NodeId>,
     timeout: Duration,
     deck: Option<DeckSelection>,
+    provider: AgentProvider,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
+    let deepseek_config = match (deck, provider) {
+        (Some(DeckSelection::BuiltinAgent), AgentProvider::DeepSeekV4Flash) => {
+            Some(DeepSeekV4FlashConfig::from_env()?)
+        }
+        _ => None,
+    };
     let identity = NodeIdentity::new(node_id);
     let runtime_host_id = RuntimeHostId::new(format!("{}:runtime-0", identity.node_id))?;
     let runtime_identity = RuntimeHostIdentity::new(runtime_host_id);
-    let mut node = match deck {
-        Some(DeckSelection::BuiltinAgent) => Node::new_with_builtin_agent(
-            identity,
-            runtime_identity,
-            listen_endpoint,
-            connect_endpoint,
-        )?,
-        None => Node::new(
+    let mut node = match (deck, provider) {
+        (Some(DeckSelection::BuiltinAgent), AgentProvider::Deterministic) => {
+            Node::new_with_builtin_agent(
+                identity,
+                runtime_identity,
+                listen_endpoint,
+                connect_endpoint,
+            )?
+        }
+        (Some(DeckSelection::BuiltinAgent), AgentProvider::DeepSeekV4Flash) => {
+            Node::new_with_deepseek_v4_flash_agent(
+                identity,
+                runtime_identity,
+                listen_endpoint,
+                connect_endpoint,
+                deepseek_config.expect("DeepSeek config is resolved before Node construction"),
+            )?
+        }
+        (None, _) => Node::new(
             identity,
             runtime_identity,
             listen_endpoint,
@@ -208,6 +233,9 @@ async fn run_tui(
                         io::Error::new(io::ErrorKind::TimedOut, "Agent turn timed out").into(),
                     );
                 }
+                TurnTerminal::Failed { reason } => {
+                    return Err(io::Error::other(reason).into());
+                }
             }
             io::stdout().flush()?;
         }
@@ -232,6 +260,12 @@ enum DeckSelection {
     BuiltinAgent,
 }
 
+#[derive(Clone, Copy)]
+enum AgentProvider {
+    Deterministic,
+    DeepSeekV4Flash,
+}
+
 enum Command {
     Help,
     Version,
@@ -242,6 +276,7 @@ enum Command {
         peer: Option<NodeId>,
         timeout: Duration,
         deck: Option<DeckSelection>,
+        provider: AgentProvider,
     },
     Probe {
         target: NodeId,
@@ -278,6 +313,8 @@ fn parse_run(arguments: &[String]) -> Result<Command, String> {
     let mut timeout_ms = DEFAULT_PROBE_TIMEOUT_MS;
     let mut timeout_was_set = false;
     let mut deck = None;
+    let mut provider = AgentProvider::Deterministic;
+    let mut provider_was_set = false;
     let mut index = 0;
 
     while index < arguments.len() {
@@ -306,7 +343,20 @@ fn parse_run(arguments: &[String]) -> Result<Command, String> {
                     _ => return Err(format!("unknown Deck `{value}`; expected `builtin-agent`")),
                 });
             }
-            "--node-id" | "--listen" | "--connect" | "--probe-peer" | "--timeout-ms" | "--deck" => {
+            "--provider" if !provider_was_set => {
+                provider = match value {
+                    "deterministic" => AgentProvider::Deterministic,
+                    "deepseek-v4-flash" => AgentProvider::DeepSeekV4Flash,
+                    _ => {
+                        return Err(format!(
+                            "unknown Agent provider `{value}`; expected `deterministic` or `deepseek-v4-flash`"
+                        ));
+                    }
+                };
+                provider_was_set = true;
+            }
+            "--node-id" | "--listen" | "--connect" | "--probe-peer" | "--timeout-ms" | "--deck"
+            | "--provider" => {
                 return Err(format!("duplicate option `{name}`"));
             }
             _ => return Err(format!("unknown node run option `{name}`")),
@@ -315,6 +365,9 @@ fn parse_run(arguments: &[String]) -> Result<Command, String> {
     }
 
     let node_id = node_id.ok_or_else(|| "node run requires --node-id <id>".to_owned())?;
+    if provider_was_set && deck.is_none() {
+        return Err("node run --provider requires --deck builtin-agent".to_owned());
+    }
     match (&connect_endpoint, &peer) {
         (Some(_), Some(_)) => {}
         (None, None) if !timeout_was_set => {}
@@ -335,6 +388,7 @@ fn parse_run(arguments: &[String]) -> Result<Command, String> {
         peer,
         timeout: Duration::from_millis(timeout_ms),
         deck,
+        provider,
     })
 }
 
@@ -379,7 +433,7 @@ fn parse_probe(arguments: &[String]) -> Result<Command, String> {
 fn parse_tui(arguments: &[String]) -> Result<Command, String> {
     let mut target = None;
     let mut connect_endpoint = DEFAULT_ENDPOINT.to_owned();
-    let mut timeout_ms = DEFAULT_PROBE_TIMEOUT_MS;
+    let mut timeout_ms = DEFAULT_TUI_TIMEOUT_MS;
     let mut connect_was_set = false;
     let mut timeout_was_set = false;
     let mut index = 0;

@@ -27,7 +27,19 @@ cargo run --locked --bin paraegox -- tui \
 
 Node 状态会展示真实的 DeckRun、DeckLock digest 和 Agent CardInstance。TUI 只保存 SessionId 与输入输出；有序历史由 Node 内的 AgentService 保存，因此第二轮确定性回答会引用第一轮用户输入。当前回答器只是用于验证路径的 deterministic responder，不是真实模型。`node probe` 和双 Node peer probe 仍保留。
 
-尚未实现真实模型、Card Link、DeviceService、跨宿主认证加密、部署或硬件能力。开发与编译的标准环境是指定 Ubuntu 服务器，具体流程见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+M4 正在收敛唯一的真实模型候选。使用 DeepSeek V4 Flash 时，在同一个 Node 命令上增加 provider 选择：
+
+```bash
+cargo run --locked --bin paraegox -- node run \
+  --node-id node-a \
+  --listen tcp/127.0.0.1:7447 \
+  --deck builtin-agent \
+  --provider deepseek-v4-flash
+```
+
+启动该进程前，进程环境必须已经提供 `DEEPSEEK_API_KEY`；密钥不能进入命令行、仓库、Deck、Fabric 或 TUI。此模式会把对话内容发送给外部 DeepSeek API。真实 credentialed smoke 尚待在指定服务器执行，所以目前不能把外部 Provider 路径称为已完成。省略 `--provider` 时仍使用本地 deterministic responder。
+
+尚未实现 Card Link、DeviceService、跨宿主认证加密、部署或硬件能力。开发与编译的标准环境是指定 Ubuntu 服务器，具体流程见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
 ## English
 
@@ -56,4 +68,16 @@ cargo run --locked --bin paraegox -- tui \
 
 Node status exposes the real DeckRun, DeckLock digest, and Agent CardInstance. The TUI owns only its SessionId and presentation; ordered history stays in AgentService on the Node, so the deterministic second reply references the first user input. This responder validates the path and is not a real model. `node probe` and the two-Node peer probe remain available.
 
-Real model access, Card Links, DeviceService, authenticated cross-host Fabric, deployment, and hardware are not implemented yet. The designated Ubuntu server remains the standard build environment; see [CONTRIBUTING.md](CONTRIBUTING.md).
+M4 is narrowing real-model access to one candidate. To select DeepSeek V4 Flash, add the provider option to the same Node command:
+
+```bash
+cargo run --locked --bin paraegox -- node run \
+  --node-id node-a \
+  --listen tcp/127.0.0.1:7447 \
+  --deck builtin-agent \
+  --provider deepseek-v4-flash
+```
+
+The process environment must already provide `DEEPSEEK_API_KEY` before startup; the credential must not enter the command line, repository, Deck, Fabric, or TUI. This mode sends conversation content to the external DeepSeek API. A real credentialed smoke test is still pending on the designated server, so the external Provider path is not yet claimed complete. Omitting `--provider` keeps the local deterministic responder.
+
+Card Links, DeviceService, authenticated cross-host Fabric, deployment, and hardware are not implemented yet. The designated Ubuntu server remains the standard build environment; see [CONTRIBUTING.md](CONTRIBUTING.md).
