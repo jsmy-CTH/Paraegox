@@ -1,6 +1,6 @@
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
-use std::process::{Child, Command, ExitStatus, Output, Stdio};
+use std::process::{Child, ChildStdin, Command, ExitStatus, Output, Stdio};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -11,6 +11,8 @@ use serde_json::Value;
 const NODE_ID: &str = "agent-chat-node";
 const FIRST_INPUT: &str = "remember project alpha";
 const SECOND_INPUT: &str = "what did I ask before?";
+const FIRST_TURN_ID: &str = "018f0f25-7f9b-4c72-8ac6-8c30ecfa1751";
+const SECOND_TURN_ID: &str = "018f0f25-7f9b-4c72-8ac6-8c30ecfa1752";
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
 const CHAT_TIMEOUT: Duration = Duration::from_secs(10);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
@@ -142,8 +144,143 @@ impl Drop for RunningNode {
     }
 }
 
+struct RunningJsonlClient {
+    child: Child,
+    stdin: Option<ChildStdin>,
+    stdout_lines: mpsc::Receiver<String>,
+    stdout_reader: Option<JoinHandle<()>>,
+    stderr: Arc<Mutex<String>>,
+    stderr_reader: Option<JoinHandle<()>>,
+}
+
+impl RunningJsonlClient {
+    fn spawn(endpoint: &str) -> Self {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_paraegox"))
+            .args([
+                "tui",
+                "--target",
+                NODE_ID,
+                "--connect",
+                endpoint,
+                "--timeout-ms",
+                "3000",
+                "--stdio-jsonl",
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("JSONL client process should start");
+
+        let stdout = child.stdout.take().expect("client stdout should be piped");
+        let (stdout_sender, stdout_lines) = mpsc::channel();
+        let stdout_reader = thread::spawn(move || {
+            for line in BufReader::new(stdout).lines() {
+                let Ok(line) = line else {
+                    break;
+                };
+                if stdout_sender.send(line).is_err() {
+                    break;
+                }
+            }
+        });
+
+        let stderr = Arc::new(Mutex::new(String::new()));
+        let stderr_capture = Arc::clone(&stderr);
+        let process_stderr = child.stderr.take().expect("client stderr should be piped");
+        let stderr_reader = thread::spawn(move || {
+            for line in BufReader::new(process_stderr).lines() {
+                let Ok(line) = line else {
+                    break;
+                };
+                let mut capture = stderr_capture.lock().expect("stderr capture lock");
+                if !capture.is_empty() {
+                    capture.push('\n');
+                }
+                capture.push_str(&line);
+            }
+        });
+
+        Self {
+            stdin: child.stdin.take(),
+            child,
+            stdout_lines,
+            stdout_reader: Some(stdout_reader),
+            stderr,
+            stderr_reader: Some(stderr_reader),
+        }
+    }
+
+    fn send(&mut self, frame: Value) {
+        let stdin = self.stdin.as_mut().expect("client stdin should be open");
+        writeln!(stdin, "{frame}").expect("JSONL command should be written");
+        stdin.flush().expect("JSONL command should be flushed");
+    }
+
+    fn receive(&mut self) -> Value {
+        let line = self
+            .stdout_lines
+            .recv_timeout(CHAT_TIMEOUT)
+            .unwrap_or_else(|error| {
+                let status = self
+                    .child
+                    .try_wait()
+                    .expect("client status should be readable");
+                panic!(
+                    "JSONL client did not respond before its deadline ({error}); status: {status:?}; stderr: {}",
+                    self.stderr_snapshot()
+                );
+            });
+        serde_json::from_str(&line).unwrap_or_else(|error| {
+            panic!("JSONL client stdout was not a JSON frame: {error}; line: {line}")
+        })
+    }
+
+    fn finish(&mut self) {
+        drop(self.stdin.take());
+        let status = wait_for_exit(&mut self.child, SHUTDOWN_TIMEOUT);
+        self.join_readers();
+        assert!(
+            status.success(),
+            "JSONL client should stop cleanly; stderr: {}",
+            self.stderr_snapshot()
+        );
+        assert!(
+            self.stdout_lines.try_recv().is_err(),
+            "JSONL client wrote unexpected stdout after the stopped frame"
+        );
+    }
+
+    fn stderr_snapshot(&self) -> String {
+        self.stderr.lock().expect("stderr capture lock").clone()
+    }
+
+    fn join_readers(&mut self) {
+        if let Some(reader) = self.stdout_reader.take() {
+            reader
+                .join()
+                .expect("client stdout reader should not panic");
+        }
+        if let Some(reader) = self.stderr_reader.take() {
+            reader
+                .join()
+                .expect("client stderr reader should not panic");
+        }
+    }
+}
+
+impl Drop for RunningJsonlClient {
+    fn drop(&mut self) {
+        if self.child.try_wait().ok().flatten().is_none() {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+        self.join_readers();
+    }
+}
+
 #[test]
-fn builtin_deck_runs_real_card_and_tui_preserves_server_history() {
+fn builtin_deck_runs_real_card_and_tui_clients_preserve_server_history() {
     let endpoint = unused_loopback_endpoint();
     let mut node = RunningNode::spawn(&endpoint);
     let status = node.status();
@@ -165,13 +302,88 @@ fn builtin_deck_runs_real_card_and_tui_preserves_server_history() {
     assert_eq!(card["generation"], 1);
     assert_eq!(card["state"], "ready");
 
+    assert_line_mode_contract(&endpoint);
+
+    let mut client = RunningJsonlClient::spawn(&endpoint);
+    let ready = client.receive();
+    assert_eq!(ready["v"], 1);
+    assert_eq!(ready["type"], "ready");
+    assert_eq!(ready["turn_timeout_ms"], 3000);
+    assert_eq!(ready["max_input_bytes"], 4096);
+    let session_id = ready["session_id"]
+        .as_str()
+        .expect("ready session_id should be a string")
+        .to_owned();
+
+    client.send(serde_json::json!({
+        "v": 1,
+        "type": "cancel",
+        "session_id": session_id,
+        "turn_id": FIRST_TURN_ID,
+    }));
+    let idle_cancel = client.receive();
+    assert_eq!(idle_cancel["type"], "cancel_result");
+    assert_eq!(idle_cancel["session_id"], session_id);
+    assert_eq!(idle_cancel["turn_id"], FIRST_TURN_ID);
+    assert_eq!(idle_cancel["result"], "not_active");
+
+    client.send(serde_json::json!({
+        "v": 1,
+        "type": "submit",
+        "session_id": session_id,
+        "turn_id": FIRST_TURN_ID,
+        "input": FIRST_INPUT,
+    }));
+    let first_result = client.receive();
+    assert_eq!(first_result["type"], "turn_terminal");
+    assert_eq!(first_result["result"]["session_id"], session_id);
+    assert_eq!(first_result["result"]["turn_id"], FIRST_TURN_ID);
+    assert_eq!(first_result["result"]["terminal"]["terminal"], "final");
+    assert_eq!(
+        first_result["result"]["terminal"]["content"],
+        format!("current: {FIRST_INPUT}"),
+        "reusing the locally rejected cancel TurnId proves it was not forwarded"
+    );
+
+    client.send(serde_json::json!({
+        "v": 1,
+        "type": "submit",
+        "session_id": session_id,
+        "turn_id": SECOND_TURN_ID,
+        "input": SECOND_INPUT,
+    }));
+    let second_result = client.receive();
+    assert_eq!(second_result["type"], "turn_terminal");
+    assert_eq!(second_result["result"]["session_id"], session_id);
+    assert_eq!(second_result["result"]["turn_id"], SECOND_TURN_ID);
+    assert_eq!(
+        second_result["result"]["terminal"]["content"],
+        format!("previous: {FIRST_INPUT}; current: {SECOND_INPUT}"),
+        "the second final must quote the exact prior input held by AgentService"
+    );
+
+    client.send(serde_json::json!({
+        "v": 1,
+        "type": "shutdown",
+        "session_id": session_id,
+    }));
+    let stopped = client.receive();
+    assert_eq!(stopped["v"], 1);
+    assert_eq!(stopped["type"], "stopped");
+    assert_eq!(stopped["session_id"], session_id);
+    client.finish();
+
+    node.stop();
+}
+
+fn assert_line_mode_contract(endpoint: &str) {
     let mut tui = Command::new(env!("CARGO_BIN_EXE_paraegox"))
         .args([
             "tui",
             "--target",
             NODE_ID,
             "--connect",
-            &endpoint,
+            endpoint,
             "--timeout-ms",
             "3000",
         ])
@@ -198,10 +410,8 @@ fn builtin_deck_runs_real_card_and_tui_preserves_server_history() {
         format!(
             "agent> current: {FIRST_INPUT}\nagent> previous: {FIRST_INPUT}; current: {SECOND_INPUT}\n"
         ),
-        "the second final must quote the exact prior input held by AgentService"
+        "line-mode TUI stdout is a stable two-turn contract"
     );
-
-    node.stop();
 }
 
 fn unused_loopback_endpoint() -> String {

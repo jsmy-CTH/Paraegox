@@ -1756,6 +1756,7 @@ dependencies = [
  "paraegox-node",
  "paraegox-runtime",
  "ratatui",
+ "serde",
  "serde_json",
  "tokio",
 ]

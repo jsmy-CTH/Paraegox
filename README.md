@@ -27,6 +27,27 @@ cargo run --locked --bin paraegox -- tui \
 
 交互终端会显示受 EAGOS 视觉风格启发的全屏聊天界面：宽屏为会话、聊天、状态三栏，较窄终端会自动折叠。Enter 发送，Esc 清空输入或取消当前轮，Ctrl-C 和 `/quit` 退出。stdin 或 stdout 不是终端时会自动保留稳定的行模式，便于脚本和系统测试。
 
+仓库还提供一个显式选择的 Python Textual 备用前端。它更贴近旧 EAGOS 的 Textual 交互风格，但不会直连 Zenoh 或建立 HTTP Bridge；它启动同版本 Rust binary，通过有界本地 stdio 合同复用同一条 typed Agent 路径。Ratatui 仍是默认界面，两者之间没有自动 fallback。
+
+先构建 Rust binary 并安装锁定的 Textual 环境：
+
+```bash
+cargo build --locked --bin paraegox
+uv sync --project clients/textual --locked
+```
+
+保持上述 Node 运行，在另一个终端启动备用客户端：
+
+```bash
+uv run --project clients/textual --locked \
+  python clients/textual/paraegox_textual.py \
+  --paraegox-bin target/debug/paraegox \
+  --target node-a \
+  --connect tcp/127.0.0.1:7447
+```
+
+Textual 中 Enter 发送，Esc 请求取消活动轮，Ctrl-C 有界关闭。界面中的 `Fabric client open` 只表示本地客户端已打开；目标 Agent 是否可用仍以一次真实 Turn 的结果为准。
+
 Node 状态会展示真实的 DeckRun、DeckLock digest 和 Agent CardInstance。TUI 只保存临时 SessionId 与有界的显示记录；有序历史由 Node 内的 AgentService 保存，因此第二轮确定性回答会引用第一轮用户输入。当前回答器只是用于验证路径的 deterministic responder，不是真实模型。界面不会伪造 streaming、thinking、tool、资源或健康状态。`node probe` 和双 Node peer probe 仍保留。
 
 M4 正在收敛唯一的真实模型候选。使用 DeepSeek V4 Flash 时，在同一个 Node 命令上增加 provider 选择：
@@ -69,6 +90,27 @@ cargo run --locked --bin paraegox -- tui \
 ```
 
 An interactive terminal opens a full-screen chat UI inspired by EAGOS's visual language: conversation, chat, and status columns on wide terminals, with responsive collapse on smaller terminals. Enter submits, Esc clears the input or cancels the active turn, and Ctrl-C or `/quit` exits. If either stdin or stdout is not a terminal, Paraegox preserves its stable line mode for scripts and system tests.
+
+The repository also provides an explicitly selected Python Textual alternative. It is closer to the legacy EAGOS Textual interaction style, but it neither connects to Zenoh directly nor creates an HTTP Bridge. Instead, it starts the same-version Rust binary and reuses the same typed Agent path through a bounded local stdio contract. Ratatui remains the default, with no automatic fallback between the two frontends.
+
+Build the Rust binary and install the locked Textual environment:
+
+```bash
+cargo build --locked --bin paraegox
+uv sync --project clients/textual --locked
+```
+
+Keep the Node above running, then start the alternative client in another terminal:
+
+```bash
+uv run --project clients/textual --locked \
+  python clients/textual/paraegox_textual.py \
+  --paraegox-bin target/debug/paraegox \
+  --target node-a \
+  --connect tcp/127.0.0.1:7447
+```
+
+In Textual, Enter submits, Esc requests cancellation of the active turn, and Ctrl-C performs a bounded shutdown. `Fabric client open` means only that the local client opened successfully; target Agent availability still requires a real Turn result.
 
 Node status exposes the real DeckRun, DeckLock digest, and Agent CardInstance. The TUI owns only its ephemeral SessionId and a bounded display history; ordered history stays in AgentService on the Node, so the deterministic second reply references the first user input. This responder validates the path and is not a real model. The UI does not fabricate streaming, thinking, tool, resource, or health states. `node probe` and the two-Node peer probe remain available.
 
