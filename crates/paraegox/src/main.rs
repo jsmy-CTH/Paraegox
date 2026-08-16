@@ -9,8 +9,10 @@ use paraegox_kernel::{NodeId, RuntimeHostId};
 use paraegox_node::{Node, NodeIdentity, probe_node};
 use paraegox_runtime::RuntimeHostIdentity;
 
+mod textual_stdio;
 mod tui;
 
+use textual_stdio::run_textual_stdio;
 use tui::run_tui;
 
 const DEFAULT_ENDPOINT: &str = "tcp/127.0.0.1:7447";
@@ -75,7 +77,14 @@ async fn main() -> ExitCode {
             target,
             connect_endpoint,
             timeout,
-        }) => finish(run_tui(target, connect_endpoint, timeout).await),
+            stdio_jsonl,
+        }) => {
+            if stdio_jsonl {
+                finish(run_textual_stdio(target, connect_endpoint, timeout).await)
+            } else {
+                finish(run_tui(target, connect_endpoint, timeout).await)
+            }
+        }
         Err(error) => {
             eprintln!("error: {error}\n\n{HELP}");
             ExitCode::from(2)
@@ -212,6 +221,7 @@ enum Command {
         target: NodeId,
         connect_endpoint: String,
         timeout: Duration,
+        stdio_jsonl: bool,
     },
 }
 
@@ -361,9 +371,18 @@ fn parse_tui(arguments: &[String]) -> Result<Command, String> {
     let mut timeout_ms = DEFAULT_TUI_TIMEOUT_MS;
     let mut connect_was_set = false;
     let mut timeout_was_set = false;
+    let mut stdio_jsonl = false;
     let mut index = 0;
 
     while index < arguments.len() {
+        if arguments[index] == "--stdio-jsonl" {
+            if stdio_jsonl {
+                return Err("duplicate option `--stdio-jsonl`".to_owned());
+            }
+            stdio_jsonl = true;
+            index += 1;
+            continue;
+        }
         let (name, value) = option_pair(arguments, index)?;
         match name {
             "--target" if target.is_none() => {
@@ -390,6 +409,7 @@ fn parse_tui(arguments: &[String]) -> Result<Command, String> {
         target,
         connect_endpoint,
         timeout: Duration::from_millis(timeout_ms),
+        stdio_jsonl,
     })
 }
 

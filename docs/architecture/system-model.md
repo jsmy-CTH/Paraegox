@@ -97,6 +97,20 @@ CoreService 按当前 Node composition 安装。没有 Agent workload 的 Node �
 
 两条路径目前都限制在 loopback。没有远程认证与加密，因此不声称已完成跨宿主通信或具身执行闭环。
 
+### Presentation adapters
+
+`paraegox tui` 的 Ratatui 全屏模式和非 TTY 行模式是当前默认终端呈现。可选的 Python Textual 客户端只通过同版本 Rust binary 提供的有界 JSONL stdio adapter 接入；Python 不拥有 raw Zenoh、Agent private wire、Session history 或 Provider 配置：
+
+```text
+Textual UI
+    ⇄ private bounded JSONL over local stdio
+Rust AgentConversationClient
+    → Fabric exact binding
+    → AgentService
+```
+
+这个 JSONL 边界是 bundled presentation adapter 的本地进程合同，不是跨 Node Fabric、公共多语言 SDK 或远程控制 API。每个进程只有一个临时 Session 和一个 active Turn；Textual 生成的同一 `TurnId` 贯穿 submit、cancel 与 terminal。`ready` 只证明本地 adapter 与 Fabric client 已打开，不能被解释为目标 Node、Agent Card 或外部 Provider 健康。Ratatui 与 Textual 之间没有自动 fallback；任一界面都不得绕过 typed client。
+
 ### M4 真实模型候选边界
 
 M4 只允许一个外部 Provider 候选：DeepSeek V4 Flash 的非流式 Chat Completions。选择 `--provider deepseek-v4-flash` 时，AgentService 仍然是 Session、成功历史、deadline、cancel 和唯一 terminal 的 owner；Provider adapter 只把已提交的 `system/user/assistant` 消息映射到一次有界模型调用，再把完整成功响应交回 AgentService。省略 `--provider` 时继续使用已经验证的 deterministic responder。

@@ -14,8 +14,9 @@ paraegox-kernel = { path = "../paraegox-kernel" }
 paraegox-node = { path = "../paraegox-node" }
 paraegox-runtime = { path = "../paraegox-runtime" }
 ratatui.workspace = true
+serde.workspace = true
 serde_json.workspace = true
-tokio = { workspace = true, features = ["io-std", "io-util", "macros", "rt-multi-thread", "signal"] }
+tokio = { workspace = true, features = ["io-std", "io-util", "macros", "rt-multi-thread", "signal", "time"] }
 
 [lints]
 workspace = true

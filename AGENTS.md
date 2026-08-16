@@ -44,6 +44,8 @@ cargo check --workspace --all-targets --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --all-targets --locked
 cargo run --locked --bin paraegox -- --help
+uv sync --project clients/textual --locked
+uv run --project clients/textual --locked python -m unittest discover -s clients/textual -p 'test_*.py'
 ```
 
 Add language- or hardware-specific gates only together with the first real consumer of that toolchain or device boundary.
